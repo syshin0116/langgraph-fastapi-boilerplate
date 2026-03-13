@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "core"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "langgraph>=1.0",
+    "langchain>=0.3",
+    "langchain-anthropic",
+    "langchain-openai",
+    "langgraph-checkpoint-postgres>=3.0",
+    "psycopg[binary,pool]>=3.2",
+    "python-dotenv",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
