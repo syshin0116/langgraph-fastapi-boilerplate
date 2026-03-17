@@ -4,9 +4,10 @@ Default implementation uses asyncio.Task (no Redis dependency).
 To scale out with Redis + ARQ, swap this with ArqRunManager (see docstring below).
 
 Architecture:
-    Web request → RunManager.create_background_run() → asyncio.Task
-    Web request → RunManager.stream_run()             → graph.astream() inline
-    Web request → RunManager.wait_run()               → graph.ainvoke() inline
+    Web request → RunManager.create_run()   → asyncio.Task (background)
+    Web request → RunManager.stream_run()   → graph.astream() inline (SSE)
+    Web request → RunManager.wait_run()     → graph.ainvoke() inline
+    Web request → RunManager.join_stream()  → rejoin existing run's SSE
 
 To migrate to ARQ:
     1. pip install arq redis
@@ -52,6 +53,8 @@ class RunManager:
         self.graphs = graphs
         self._active_tasks: dict[str, asyncio.Task] = {}  # run_id → Task
         self._thread_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        self._event_queues: dict[str, list[asyncio.Queue]] = defaultdict(list)
+        self._run_threads: dict[str, str] = {}  # run_id → thread_id
 
     def _get_graph(self, graph_id: str = "agent") -> CompiledStateGraph:
         graph = self.graphs.get(graph_id)
@@ -97,7 +100,7 @@ class RunManager:
 
     # ---- Background run ----
 
-    async def create_background_run(
+    async def create_run(
         self,
         thread_id: str,
         *,
@@ -113,7 +116,7 @@ class RunManager:
         interrupt_after: list[str] | str | None = None,
         webhook: str | None = None,
     ) -> dict[str, Any]:
-        """Create a background run — executes in asyncio.Task."""
+        """Create a run — executes in background asyncio.Task."""
         if multitask_strategy != "enqueue":
             await self._handle_multitask(thread_id, multitask_strategy)
 
@@ -135,6 +138,7 @@ class RunManager:
         )
 
         run_id = str(run_record["run_id"])
+        self._run_threads[run_id] = thread_id
 
         task = asyncio.create_task(
             self._execute_run(
@@ -148,9 +152,19 @@ class RunManager:
             )
         )
         self._active_tasks[run_id] = task
-        task.add_done_callback(lambda t: self._active_tasks.pop(run_id, None))
+
+        def _cleanup(t: asyncio.Task) -> None:
+            self._active_tasks.pop(run_id, None)
+            self._run_threads.pop(run_id, None)
+
+        task.add_done_callback(_cleanup)
 
         return run_record
+
+    def _publish_event(self, run_id: str, event: dict | None) -> None:
+        """Push an event to all subscriber queues for a run."""
+        for q in self._event_queues.get(run_id, []):
+            q.put_nowait(event)
 
     async def _execute_run(
         self,
@@ -163,7 +177,7 @@ class RunManager:
         config: dict | None = None,
         assistant_config: dict | None = None,
     ) -> None:
-        """Execute a run in the background."""
+        """Execute a run in the background, publishing events to subscribers."""
         graph = self._get_graph(graph_id)
         lg_config = self._build_config(
             thread_id, assistant_config=assistant_config, run_config=config
@@ -174,7 +188,11 @@ class RunManager:
             await self.db.update_run_status(run_id, "running")
             await self.db.set_thread_status(thread_id, "busy")
 
-            await graph.ainvoke(graph_input, config=lg_config)
+            async for chunk in graph.astream(
+                graph_input, config=lg_config, stream_mode="values", context={}
+            ):
+                event = _format_stream_event("values", chunk)
+                self._publish_event(run_id, event)
 
             await self.db.update_run_status(run_id, "success")
             await self.db.set_thread_status(thread_id, "idle")
@@ -185,6 +203,46 @@ class RunManager:
             logger.exception("Run %s failed: %s", run_id, e)
             await self.db.update_run_status(run_id, "error")
             await self.db.set_thread_status(thread_id, "error")
+            self._publish_event(run_id, {"event": "error", "data": json.dumps({"error": str(e)})})
+        finally:
+            self._publish_event(run_id, None)  # sentinel — end of stream
+            self._event_queues.pop(run_id, None)
+
+    # ---- Join stream (rejoin existing run) ----
+
+    async def join_stream(
+        self,
+        thread_id: str,
+        run_id: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Subscribe to events from an existing run (for SSE rejoin after disconnect)."""
+        yield {"event": "metadata", "data": json.dumps({"run_id": run_id, "attempt": 1})}
+
+        task = self._active_tasks.get(run_id)
+
+        if not task or task.done():
+            # Run already completed — return final state from checkpointer
+            config = {"configurable": {"thread_id": thread_id}}
+            snapshot = await self.checkpointer.aget_tuple(config)
+            if snapshot:
+                state = snapshot.checkpoint.get("channel_values", {})
+                yield _format_stream_event("values", state)
+            return
+
+        # Subscribe to live events from the running task
+        queue: asyncio.Queue = asyncio.Queue()
+        self._event_queues[run_id].append(queue)
+
+        try:
+            while True:
+                event = await queue.get()
+                if event is None:  # sentinel — run finished
+                    break
+                yield event
+        finally:
+            queues = self._event_queues.get(run_id, [])
+            if queue in queues:
+                queues.remove(queue)
 
     # ---- Stream run ----
 
@@ -204,8 +262,12 @@ class RunManager:
         interrupt_before: list[str] | str | None = None,
         interrupt_after: list[str] | str | None = None,
         on_disconnect: str = "cancel",
-    ) -> AsyncIterator[dict[str, Any]]:
-        """Execute a run and stream results inline (SSE events)."""
+    ) -> tuple[str, AsyncIterator[dict[str, Any]]]:
+        """Create a streaming run. Returns (run_id, event_generator).
+
+        The run_id is returned eagerly so callers can set the Location header
+        for SSE reconnection support.
+        """
         if multitask_strategy != "enqueue":
             await self._handle_multitask(thread_id, multitask_strategy)
 
@@ -222,43 +284,45 @@ class RunManager:
         run_id = str(run_record["run_id"])
         await self.db.set_thread_status(thread_id, "busy")
 
-        graph = self._get_graph(graph_id)
-        lg_config = self._build_config(
-            thread_id, assistant_config=assistant_config, run_config=config
-        )
-        graph_input = _resolve_input(run_input, command)
+        async def _generate() -> AsyncIterator[dict[str, Any]]:
+            graph = self._get_graph(graph_id)
+            lg_config = self._build_config(
+                thread_id, assistant_config=assistant_config, run_config=config
+            )
+            graph_input = _resolve_input(run_input, command)
 
-        # Normalize stream_mode
-        modes = [stream_mode] if isinstance(stream_mode, str) else stream_mode
+            # Normalize stream_mode (map SDK names to LangGraph library names)
+            modes = [stream_mode] if isinstance(stream_mode, str) else list(stream_mode)
+            modes = _normalize_stream_modes(modes)
 
-        # Metadata event
-        yield {"event": "metadata", "data": json.dumps({"run_id": run_id})}
+            # Metadata event (matches LangGraph Platform format)
+            yield {"event": "metadata", "data": json.dumps({"run_id": run_id, "attempt": 1})}
 
-        try:
-            if len(modes) == 1:
-                async for chunk in graph.astream(
-                    graph_input, config=lg_config, stream_mode=modes[0]
-                ):
-                    yield _format_stream_event(modes[0], chunk)
-            else:
-                async for mode, chunk in graph.astream(
-                    graph_input, config=lg_config, stream_mode=modes
-                ):
-                    yield _format_stream_event(mode, chunk)
+            try:
+                if len(modes) == 1:
+                    async for chunk in graph.astream(
+                        graph_input, config=lg_config, stream_mode=modes[0], context={}
+                    ):
+                        yield _format_stream_event(modes[0], chunk)
+                else:
+                    async for mode, chunk in graph.astream(
+                        graph_input, config=lg_config, stream_mode=modes, context={}
+                    ):
+                        yield _format_stream_event(mode, chunk)
 
-            await self.db.update_run_status(run_id, "success")
-            await self.db.set_thread_status(thread_id, "idle")
-        except asyncio.CancelledError:
-            await self.db.update_run_status(run_id, "interrupted")
-            await self.db.set_thread_status(thread_id, "interrupted")
-            raise
-        except Exception as e:
-            logger.exception("Stream run %s failed: %s", run_id, e)
-            await self.db.update_run_status(run_id, "error")
-            await self.db.set_thread_status(thread_id, "error")
-            yield {"event": "error", "data": json.dumps({"error": str(e)})}
+                await self.db.update_run_status(run_id, "success")
+                await self.db.set_thread_status(thread_id, "idle")
+            except asyncio.CancelledError:
+                await self.db.update_run_status(run_id, "interrupted")
+                await self.db.set_thread_status(thread_id, "interrupted")
+                raise
+            except Exception as e:
+                logger.exception("Stream run %s failed: %s", run_id, e)
+                await self.db.update_run_status(run_id, "error")
+                await self.db.set_thread_status(thread_id, "error")
+                yield {"event": "error", "data": json.dumps({"error": str(e)})}
 
-        yield {"event": "end", "data": ""}
+        return run_id, _generate()
 
     # ---- Wait run ----
 
@@ -301,7 +365,7 @@ class RunManager:
         graph_input = _resolve_input(run_input, command)
 
         try:
-            result = await graph.ainvoke(graph_input, config=lg_config)
+            result = await graph.ainvoke(graph_input, config=lg_config, context={})
             await self.db.update_run_status(run_id, "success")
             await self.db.set_thread_status(thread_id, "idle")
             return result
@@ -370,15 +434,26 @@ def _serialize_value(v: Any) -> Any:
     return str(v)
 
 
+def _normalize_stream_modes(modes: list[str]) -> list[str]:
+    """Map SDK stream mode names to LangGraph library names.
+
+    The @langchain/react SDK sends 'messages-tuple' but LangGraph's
+    graph.astream() only accepts 'messages'.
+    """
+    mapping = {"messages-tuple": "messages"}
+    return [mapping.get(m, m) for m in modes]
+
+
 def _format_stream_event(mode: str, chunk: Any) -> dict[str, str]:
-    """Format a graph stream chunk as an SSE event dict."""
+    """Format a graph stream chunk as an SSE event dict.
+
+    The @langchain/langgraph-sdk StreamManager expects:
+    - event name = stream mode name (e.g. "values", "messages")
+    - messages data = [message_chunk, metadata] (array, not dict)
+    """
     if mode == "messages" and isinstance(chunk, tuple) and len(chunk) == 2:
         msg, meta = chunk
-        data = {"message": _serialize_value(msg), "metadata": _serialize_value(meta)}
-        event_name = "messages/partial"
-        if isinstance(msg, AIMessage) and not msg.tool_calls:
-            if hasattr(msg, "response_metadata") and msg.response_metadata:
-                event_name = "messages/complete"
-        return {"event": event_name, "data": json.dumps(data, default=str)}
+        data = [_serialize_value(msg), _serialize_value(meta)]
+        return {"event": "messages", "data": json.dumps(data, default=str)}
 
     return {"event": mode, "data": json.dumps(_serialize_value(chunk), default=str)}

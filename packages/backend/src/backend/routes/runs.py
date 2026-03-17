@@ -36,14 +36,28 @@ async def _ensure_thread(db: DB, thread_id: str, if_not_exists: str | None = Non
         await db.create_thread(thread_id=thread_id)
 
 
-async def _get_assistant_config(db: DB, assistant_id: str | None) -> dict | None:
+def _resolve_graph_id(assistant_id: str | None) -> str:
+    """Resolve graph_id from assistant_id. Non-UUID values are treated as graph_id directly."""
     if not assistant_id:
+        return "agent"
+    try:
+        uuid.UUID(assistant_id)
+        return "agent"  # UUID → look up from DB assistant, default to "agent"
+    except ValueError:
+        return assistant_id  # e.g. "agent" string → use as graph_id
+
+
+async def _get_assistant_config(db: DB, assistant_id: str | None) -> dict | None:
+    """Look up assistant config from DB. If assistant_id is a graph_id (not UUID), skip DB lookup."""
+    if not assistant_id:
+        return None
+    try:
+        uuid.UUID(assistant_id)
+    except ValueError:
         return None
     assistant = await db.get_assistant(assistant_id)
     if not assistant:
-        raise HTTPException(
-            status_code=404, detail=f"Assistant {assistant_id} not found"
-        )
+        return None
     return assistant.get("config")
 
 
@@ -62,11 +76,12 @@ async def create_run(
     await _ensure_thread(db, thread_id, body.if_not_exists)
     assistant_config = await _get_assistant_config(db, body.assistant_id)
     try:
-        row = await run_manager.create_background_run(
+        row = await run_manager.create_run(
             thread_id,
             run_input=body.input,
             command=body.command,
             config=body.config,
+            graph_id=_resolve_graph_id(body.assistant_id),
             assistant_id=body.assistant_id,
             assistant_config=assistant_config,
             metadata=body.metadata,
@@ -90,11 +105,12 @@ async def stream_run(
     await _ensure_thread(db, thread_id, body.if_not_exists)
     assistant_config = await _get_assistant_config(db, body.assistant_id)
     try:
-        event_gen = run_manager.stream_run(
+        run_id, event_gen = await run_manager.stream_run(
             thread_id,
             run_input=body.input,
             command=body.command,
             config=body.config,
+            graph_id=_resolve_graph_id(body.assistant_id),
             assistant_id=body.assistant_id,
             assistant_config=assistant_config,
             metadata=body.metadata,
@@ -106,7 +122,10 @@ async def stream_run(
         )
     except RunConflictError as e:
         raise HTTPException(status_code=409, detail=str(e))
-    return EventSourceResponse(event_gen)
+
+    response = EventSourceResponse(event_gen)
+    response.headers["Location"] = f"/threads/{thread_id}/runs/{run_id}/stream"
+    return response
 
 
 @router.post("/threads/{thread_id}/runs/wait")
@@ -124,6 +143,7 @@ async def wait_run(
             run_input=body.input,
             command=body.command,
             config=body.config,
+            graph_id=_resolve_graph_id(body.assistant_id),
             assistant_id=body.assistant_id,
             assistant_config=assistant_config,
             metadata=body.metadata,
@@ -158,6 +178,17 @@ async def get_run(
     if not row:
         raise HTTPException(status_code=404, detail="Run not found")
     return _to_response(row)
+
+
+@router.get("/threads/{thread_id}/runs/{run_id}/stream")
+async def stream_existing_run(
+    thread_id: str,
+    run_id: str,
+    run_manager: Annotated[RunManager, Depends(get_run_manager)],
+):
+    """Rejoin an existing run's SSE stream (reconnection after disconnect)."""
+    event_gen = run_manager.join_stream(thread_id, run_id)
+    return EventSourceResponse(event_gen)
 
 
 @router.post("/threads/{thread_id}/runs/{run_id}/cancel")
@@ -206,7 +237,7 @@ async def stateless_stream_run(
     thread_id = str(uuid.uuid4())
     await db.create_thread(thread_id=thread_id)
     assistant_config = await _get_assistant_config(db, body.assistant_id)
-    event_gen = run_manager.stream_run(
+    run_id, event_gen = await run_manager.stream_run(
         thread_id,
         run_input=body.input,
         command=body.command,
@@ -218,7 +249,9 @@ async def stateless_stream_run(
         interrupt_before=body.interrupt_before,
         interrupt_after=body.interrupt_after,
     )
-    return EventSourceResponse(event_gen)
+    response = EventSourceResponse(event_gen)
+    response.headers["Location"] = f"/threads/{thread_id}/runs/{run_id}/stream"
+    return response
 
 
 @router.post("/runs", response_model=RunResponse)
@@ -230,7 +263,7 @@ async def stateless_create_run(
     thread_id = str(uuid.uuid4())
     await db.create_thread(thread_id=thread_id)
     assistant_config = await _get_assistant_config(db, body.assistant_id)
-    row = await run_manager.create_background_run(
+    row = await run_manager.create_run(
         thread_id,
         run_input=body.input,
         command=body.command,

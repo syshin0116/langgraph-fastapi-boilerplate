@@ -1,5 +1,6 @@
 """FastAPI application entry point — LangGraph Platform-compatible API."""
 
+import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -12,6 +13,8 @@ from psycopg_pool import AsyncConnectionPool
 from core.agent.graph import builder as agent_builder
 from core.db import DB
 
+from backend.logging_config import setup_logging
+from backend.middleware import RequestLoggingMiddleware
 from backend.routes.assistants import router as assistants_router
 from backend.routes.crons import router as crons_router
 from backend.routes.runs import router as runs_router
@@ -20,6 +23,9 @@ from backend.routes.threads import router as threads_router
 from backend.run_manager import RunManager
 
 load_dotenv()
+setup_logging()
+
+logger = logging.getLogger(__name__)
 
 # Graph registry: graph_id → StateGraph builder
 _graphs_registry = {
@@ -57,11 +63,14 @@ async def lifespan(app: FastAPI):
         app.state.graphs = compiled_graphs
         app.state.run_manager = run_manager
 
+        logger.info("Application started — graphs: %s", list(compiled_graphs.keys()))
         yield
+        logger.info("Application shutting down")
 
 
 app = FastAPI(title="LangGraph Agent API", lifespan=lifespan)
 
+app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -71,9 +80,10 @@ app.add_middleware(
 )
 
 
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
+@app.get("/ok")
+async def ok():
+    """Health check — matches LangGraph Platform convention."""
+    return {"ok": True}
 
 
 @app.get("/info")

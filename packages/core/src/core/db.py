@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 _SETUP_STATEMENTS = [
@@ -32,7 +33,7 @@ _SETUP_STATEMENTS = [
     """CREATE TABLE IF NOT EXISTS runs (
         run_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         thread_id UUID REFERENCES threads(thread_id) ON DELETE CASCADE,
-        assistant_id UUID,
+        assistant_id TEXT,
         status TEXT NOT NULL DEFAULT 'pending',
         input JSONB,
         command JSONB,
@@ -89,11 +90,33 @@ def _str_to_ns(s: str) -> list[str]:
     return s.split(".") if s else []
 
 
+class _DictRowConnection:
+    """Async context manager wrapper that sets row_factory=dict_row on acquire."""
+
+    def __init__(self, conn_ctx):
+        self._ctx = conn_ctx
+        self._conn = None
+
+    async def __aenter__(self):
+        self._conn = await self._ctx.__aenter__()
+        self._conn.row_factory = dict_row
+        return self._conn
+
+    async def __aexit__(self, *args):
+        return await self._ctx.__aexit__(*args)
+
+
 class DB:
     """Database access layer."""
 
     def __init__(self, pool: AsyncConnectionPool):
         self.pool = pool
+
+    def _conn(self):
+        """Get a connection with dict_row factory."""
+        conn = self.pool.connection()
+        # Wrap to set row_factory on the acquired connection
+        return _DictRowConnection(conn)
 
     async def setup(self) -> None:
         async with self.pool.connection() as conn:
@@ -116,7 +139,7 @@ class DB:
     ) -> dict[str, Any]:
         aid = assistant_id or _uuid()
         now = _now()
-        async with self.pool.connection() as conn:
+        async with self._conn() as conn:
             if if_exists == "do_nothing":
                 row = await (
                     await conn.execute(
@@ -157,7 +180,7 @@ class DB:
             return dict(row)
 
     async def get_assistant(self, assistant_id: str) -> dict[str, Any] | None:
-        async with self.pool.connection() as conn:
+        async with self._conn() as conn:
             row = await (
                 await conn.execute(
                     "SELECT * FROM assistants WHERE assistant_id = %s",
@@ -185,7 +208,7 @@ class DB:
         sets.append("updated_at = %s")
         vals.append(_now())
         vals.append(assistant_id)
-        async with self.pool.connection() as conn:
+        async with self._conn() as conn:
             row = await (
                 await conn.execute(
                     f"UPDATE assistants SET {', '.join(sets)} WHERE assistant_id = %s RETURNING *",
@@ -195,7 +218,7 @@ class DB:
             return dict(row) if row else None
 
     async def delete_assistant(self, assistant_id: str) -> None:
-        async with self.pool.connection() as conn:
+        async with self._conn() as conn:
             await conn.execute(
                 "DELETE FROM assistants WHERE assistant_id = %s", (assistant_id,)
             )
@@ -222,7 +245,7 @@ class DB:
             vals.append(json.dumps(metadata))
         clause = " AND ".join(where) if where else "TRUE"
         vals.extend([limit, offset])
-        async with self.pool.connection() as conn:
+        async with self._conn() as conn:
             rows = await (
                 await conn.execute(
                     f"SELECT * FROM assistants WHERE {clause} ORDER BY updated_at DESC LIMIT %s OFFSET %s",
@@ -242,7 +265,7 @@ class DB:
     ) -> dict[str, Any]:
         tid = thread_id or _uuid()
         now = _now()
-        async with self.pool.connection() as conn:
+        async with self._conn() as conn:
             if if_exists == "do_nothing":
                 row = await (
                     await conn.execute(
@@ -265,7 +288,7 @@ class DB:
             return dict(row)
 
     async def get_thread(self, thread_id: str) -> dict[str, Any] | None:
-        async with self.pool.connection() as conn:
+        async with self._conn() as conn:
             row = await (
                 await conn.execute(
                     "SELECT * FROM threads WHERE thread_id = %s", (thread_id,)
@@ -291,7 +314,7 @@ class DB:
         sets.append("updated_at = %s")
         vals.append(_now())
         vals.append(thread_id)
-        async with self.pool.connection() as conn:
+        async with self._conn() as conn:
             row = await (
                 await conn.execute(
                     f"UPDATE threads SET {', '.join(sets)} WHERE thread_id = %s RETURNING *",
@@ -301,7 +324,7 @@ class DB:
             return dict(row) if row else None
 
     async def delete_thread(self, thread_id: str) -> None:
-        async with self.pool.connection() as conn:
+        async with self._conn() as conn:
             await conn.execute(
                 "DELETE FROM threads WHERE thread_id = %s", (thread_id,)
             )
@@ -324,7 +347,7 @@ class DB:
             vals.append(json.dumps(metadata))
         clause = " AND ".join(where) if where else "TRUE"
         vals.extend([limit, offset])
-        async with self.pool.connection() as conn:
+        async with self._conn() as conn:
             rows = await (
                 await conn.execute(
                     f"SELECT * FROM threads WHERE {clause} ORDER BY updated_at DESC LIMIT %s OFFSET %s",
@@ -334,7 +357,7 @@ class DB:
             return [dict(r) for r in rows]
 
     async def set_thread_status(self, thread_id: str, status: str) -> None:
-        async with self.pool.connection() as conn:
+        async with self._conn() as conn:
             await conn.execute(
                 "UPDATE threads SET status = %s, updated_at = %s WHERE thread_id = %s",
                 (status, _now(), thread_id),
@@ -357,7 +380,7 @@ class DB:
     ) -> dict[str, Any]:
         run_id = _uuid()
         now = _now()
-        async with self.pool.connection() as conn:
+        async with self._conn() as conn:
             row = await (
                 await conn.execute(
                     """INSERT INTO runs
@@ -383,7 +406,7 @@ class DB:
             return dict(row)
 
     async def get_run(self, thread_id: str, run_id: str) -> dict[str, Any] | None:
-        async with self.pool.connection() as conn:
+        async with self._conn() as conn:
             row = await (
                 await conn.execute(
                     "SELECT * FROM runs WHERE run_id = %s AND thread_id = %s",
@@ -393,7 +416,7 @@ class DB:
             return dict(row) if row else None
 
     async def update_run_status(self, run_id: str, status: str) -> None:
-        async with self.pool.connection() as conn:
+        async with self._conn() as conn:
             await conn.execute(
                 "UPDATE runs SET status = %s, updated_at = %s WHERE run_id = %s",
                 (status, _now(), run_id),
@@ -414,7 +437,7 @@ class DB:
             vals.append(status)
         clause = " AND ".join(where)
         vals.extend([limit, offset])
-        async with self.pool.connection() as conn:
+        async with self._conn() as conn:
             rows = await (
                 await conn.execute(
                     f"SELECT * FROM runs WHERE {clause} ORDER BY created_at DESC LIMIT %s OFFSET %s",
@@ -424,7 +447,7 @@ class DB:
             return [dict(r) for r in rows]
 
     async def delete_run(self, thread_id: str, run_id: str) -> None:
-        async with self.pool.connection() as conn:
+        async with self._conn() as conn:
             await conn.execute(
                 "DELETE FROM runs WHERE run_id = %s AND thread_id = %s",
                 (run_id, thread_id),
@@ -433,7 +456,7 @@ class DB:
     async def get_active_run_for_thread(
         self, thread_id: str
     ) -> dict[str, Any] | None:
-        async with self.pool.connection() as conn:
+        async with self._conn() as conn:
             row = await (
                 await conn.execute(
                     "SELECT * FROM runs WHERE thread_id = %s AND status IN ('pending', 'running') ORDER BY created_at DESC LIMIT 1",
@@ -449,7 +472,7 @@ class DB:
     ) -> None:
         ns = _ns_to_str(namespace)
         now = _now()
-        async with self.pool.connection() as conn:
+        async with self._conn() as conn:
             await conn.execute(
                 """INSERT INTO store_items (namespace, key, value, created_at, updated_at)
                 VALUES (%s, %s, %s, %s, %s)
@@ -463,7 +486,7 @@ class DB:
         self, namespace: list[str], key: str
     ) -> dict[str, Any] | None:
         ns = _ns_to_str(namespace)
-        async with self.pool.connection() as conn:
+        async with self._conn() as conn:
             row = await (
                 await conn.execute(
                     "SELECT * FROM store_items WHERE namespace = %s AND key = %s",
@@ -478,7 +501,7 @@ class DB:
 
     async def store_delete(self, namespace: list[str], key: str) -> None:
         ns = _ns_to_str(namespace)
-        async with self.pool.connection() as conn:
+        async with self._conn() as conn:
             await conn.execute(
                 "DELETE FROM store_items WHERE namespace = %s AND key = %s",
                 (ns, key),
@@ -500,7 +523,7 @@ class DB:
             vals.append(json.dumps(filter))
         clause = " AND ".join(where)
         vals.extend([limit, offset])
-        async with self.pool.connection() as conn:
+        async with self._conn() as conn:
             rows = await (
                 await conn.execute(
                     f"SELECT * FROM store_items WHERE {clause} ORDER BY updated_at DESC LIMIT %s OFFSET %s",
@@ -535,7 +558,7 @@ class DB:
             vals.append(f"%{s}")
         clause = " AND ".join(where) if where else "TRUE"
         vals.extend([limit, offset])
-        async with self.pool.connection() as conn:
+        async with self._conn() as conn:
             rows = await (
                 await conn.execute(
                     f"SELECT DISTINCT namespace FROM store_items WHERE {clause} ORDER BY namespace LIMIT %s OFFSET %s",
@@ -571,7 +594,7 @@ class DB:
     ) -> dict[str, Any]:
         cron_id = _uuid()
         now = _now()
-        async with self.pool.connection() as conn:
+        async with self._conn() as conn:
             row = await (
                 await conn.execute(
                     """INSERT INTO crons
@@ -597,7 +620,7 @@ class DB:
             return dict(row)
 
     async def get_cron(self, cron_id: str) -> dict[str, Any] | None:
-        async with self.pool.connection() as conn:
+        async with self._conn() as conn:
             row = await (
                 await conn.execute(
                     "SELECT * FROM crons WHERE cron_id = %s", (cron_id,)
@@ -621,7 +644,7 @@ class DB:
         sets.append("updated_at = %s")
         vals.append(_now())
         vals.append(cron_id)
-        async with self.pool.connection() as conn:
+        async with self._conn() as conn:
             row = await (
                 await conn.execute(
                     f"UPDATE crons SET {', '.join(sets)} WHERE cron_id = %s RETURNING *",
@@ -631,7 +654,7 @@ class DB:
             return dict(row) if row else None
 
     async def delete_cron(self, cron_id: str) -> None:
-        async with self.pool.connection() as conn:
+        async with self._conn() as conn:
             await conn.execute(
                 "DELETE FROM crons WHERE cron_id = %s", (cron_id,)
             )
@@ -658,7 +681,7 @@ class DB:
             vals.append(enabled)
         clause = " AND ".join(where) if where else "TRUE"
         vals.extend([limit, offset])
-        async with self.pool.connection() as conn:
+        async with self._conn() as conn:
             rows = await (
                 await conn.execute(
                     f"SELECT * FROM crons WHERE {clause} ORDER BY created_at DESC LIMIT %s OFFSET %s",

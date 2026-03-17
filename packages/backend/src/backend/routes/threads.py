@@ -3,8 +3,6 @@
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-
 from core.agent.utils import get_message_text
 from core.db import DB
 from core.schemas import (
@@ -15,7 +13,9 @@ from core.schemas import (
     ThreadUpdate,
 )
 
-from backend.deps import get_checkpointer, get_db, resolve_graph
+from langgraph.graph.state import CompiledStateGraph
+
+from backend.deps import get_db, resolve_graph
 
 router = APIRouter(prefix="/threads", tags=["threads"])
 
@@ -94,39 +94,60 @@ async def search_threads(
 @router.get("/{thread_id}/state")
 async def get_thread_state(
     thread_id: str,
-    checkpointer: Annotated[AsyncPostgresSaver, Depends(get_checkpointer)],
     db: Annotated[DB, Depends(get_db)],
+    graph: Annotated[CompiledStateGraph, Depends(resolve_graph)],
 ):
     row = await db.get_thread(thread_id)
     if not row:
         raise HTTPException(status_code=404, detail="Thread not found")
 
     config = {"configurable": {"thread_id": thread_id}}
-    checkpoint_tuple = await checkpointer.aget_tuple(config)
+    snapshot = await graph.aget_state(config)
 
-    if not checkpoint_tuple:
-        return {"thread_id": thread_id, "values": {}, "next": [], "checkpoint": None}
+    if not snapshot or not snapshot.config:
+        return {"thread_id": thread_id, "values": {}, "next": [], "tasks": [], "checkpoint": None}
 
-    checkpoint = checkpoint_tuple.checkpoint
-    values = checkpoint.get("channel_values", {})
+    # Build tasks with interrupt data (matches LangGraph Platform format)
+    tasks = []
+    for task in snapshot.tasks:
+        task_dict: dict[str, Any] = {
+            "id": task.id,
+            "name": task.name,
+            "interrupts": [],
+        }
+        if task.error:
+            task_dict["error"] = str(task.error)
+        if task.interrupts:
+            task_dict["interrupts"] = [
+                {
+                    "value": _serialize_value(i.value),
+                    "resumable": getattr(i, "resumable", True),
+                    "ns": getattr(i, "ns", None),
+                    "when": getattr(i, "when", "during"),
+                }
+                for i in task.interrupts
+            ]
+        tasks.append(task_dict)
+
+    checkpoint_config = snapshot.config.get("configurable", {})
 
     return {
         "thread_id": thread_id,
-        "values": _serialize_state_values(values),
-        "next": list({w[0] for w in checkpoint_tuple.pending_writes})
-        if checkpoint_tuple.pending_writes
-        else [],
+        "values": _serialize_state_values(snapshot.values),
+        "next": list(snapshot.next),
+        "tasks": tasks,
         "checkpoint": {
             "thread_id": thread_id,
-            "checkpoint_ns": checkpoint_tuple.config["configurable"].get(
-                "checkpoint_ns", ""
-            ),
-            "checkpoint_id": checkpoint_tuple.config["configurable"].get(
-                "checkpoint_id"
-            ),
+            "checkpoint_ns": checkpoint_config.get("checkpoint_ns", ""),
+            "checkpoint_id": checkpoint_config.get("checkpoint_id"),
         },
-        "created_at": checkpoint.get("ts"),
-        "metadata": checkpoint.get("metadata", {}),
+        "parent_checkpoint": {
+            "thread_id": thread_id,
+            "checkpoint_ns": snapshot.parent_config["configurable"].get("checkpoint_ns", ""),
+            "checkpoint_id": snapshot.parent_config["configurable"].get("checkpoint_id"),
+        } if snapshot.parent_config else None,
+        "created_at": snapshot.created_at,
+        "metadata": snapshot.metadata or {},
     }
 
 
@@ -134,9 +155,8 @@ async def get_thread_state(
 async def update_thread_state(
     thread_id: str,
     body: ThreadStateUpdate,
-    checkpointer: Annotated[AsyncPostgresSaver, Depends(get_checkpointer)],
     db: Annotated[DB, Depends(get_db)],
-    graph=Depends(resolve_graph),
+    graph: Annotated[CompiledStateGraph, Depends(resolve_graph)],
 ):
     row = await db.get_thread(thread_id)
     if not row:
@@ -153,8 +173,8 @@ async def update_thread_state(
 @router.post("/{thread_id}/history")
 async def get_thread_history(
     thread_id: str,
-    checkpointer: Annotated[AsyncPostgresSaver, Depends(get_checkpointer)],
     db: Annotated[DB, Depends(get_db)],
+    graph: Annotated[CompiledStateGraph, Depends(resolve_graph)],
     limit: int = 10,
 ):
     row = await db.get_thread(thread_id)
@@ -163,32 +183,64 @@ async def get_thread_history(
 
     config = {"configurable": {"thread_id": thread_id}}
     history = []
-    count = 0
 
-    async for ct in checkpointer.alist(config):
-        if count >= limit:
+    async for snapshot in graph.aget_state_history(config):
+        if len(history) >= limit:
             break
-        checkpoint = ct.checkpoint
+
+        checkpoint_config = snapshot.config.get("configurable", {})
+
+        tasks = []
+        for task in snapshot.tasks:
+            task_dict: dict[str, Any] = {"id": task.id, "name": task.name, "interrupts": []}
+            if task.interrupts:
+                task_dict["interrupts"] = [
+                    {
+                        "value": _serialize_value(i.value),
+                        "resumable": getattr(i, "resumable", True),
+                        "ns": getattr(i, "ns", None),
+                        "when": getattr(i, "when", "during"),
+                    }
+                    for i in task.interrupts
+                ]
+            tasks.append(task_dict)
+
         history.append(
             {
-                "values": _serialize_state_values(
-                    checkpoint.get("channel_values", {})
-                ),
-                "next": [],
+                "values": _serialize_state_values(snapshot.values),
+                "next": list(snapshot.next),
+                "tasks": tasks,
                 "checkpoint": {
                     "thread_id": thread_id,
-                    "checkpoint_ns": ct.config["configurable"].get(
-                        "checkpoint_ns", ""
-                    ),
-                    "checkpoint_id": ct.config["configurable"].get("checkpoint_id"),
+                    "checkpoint_ns": checkpoint_config.get("checkpoint_ns", ""),
+                    "checkpoint_id": checkpoint_config.get("checkpoint_id"),
                 },
-                "created_at": checkpoint.get("ts"),
-                "metadata": checkpoint.get("metadata", {}),
+                "parent_checkpoint": {
+                    "thread_id": thread_id,
+                    "checkpoint_ns": snapshot.parent_config["configurable"].get("checkpoint_ns", ""),
+                    "checkpoint_id": snapshot.parent_config["configurable"].get("checkpoint_id"),
+                } if snapshot.parent_config else None,
+                "created_at": snapshot.created_at,
+                "metadata": snapshot.metadata or {},
             }
         )
-        count += 1
 
     return history
+
+
+def _serialize_value(v: Any) -> Any:
+    """Make a value JSON-serializable."""
+    if isinstance(v, (str, int, float, bool, type(None))):
+        return v
+    if isinstance(v, dict):
+        return {k: _serialize_value(val) for k, val in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_serialize_value(item) for item in v]
+    if hasattr(v, "model_dump"):
+        return v.model_dump()
+    if hasattr(v, "dict"):
+        return v.dict()
+    return str(v)
 
 
 def _serialize_state_values(values: dict) -> dict:
