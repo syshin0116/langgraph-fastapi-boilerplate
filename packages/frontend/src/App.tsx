@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useStream } from "@langchain/react";
 import { Button } from "@/components/ui/button";
 import { Loader } from "@/components/ui/loader";
@@ -13,7 +13,6 @@ import {
   MessageContent,
 } from "@/components/ui/message";
 import { Tool } from "@/components/ui/tool";
-import type { ToolPart } from "@/components/ui/tool";
 import {
   Reasoning,
   ReasoningTrigger,
@@ -25,6 +24,7 @@ import {
   PromptInputActions,
   PromptInputAction,
 } from "@/components/ui/prompt-input";
+import { Textarea } from "@/components/ui/textarea";
 import { PromptSuggestion } from "@/components/ui/prompt-suggestion";
 import {
   PanelRightOpenIcon,
@@ -62,6 +62,13 @@ function App() {
   const [input, setInput] = useState("");
   const [showTimeTravel, setShowTimeTravel] = useState(false);
   const [savedRunId, setSavedRunId] = useState<string | null>(null);
+  // "always approve" per tool name — persists for session
+  const [autoApproveTools, setAutoApproveTools] = useState<Set<string>>(() => {
+    try {
+      const saved = sessionStorage.getItem("lg:autoApproveTools");
+      return saved ? new Set(JSON.parse(saved)) : new Set();
+    } catch { return new Set(); }
+  });
 
   const thread = useStream<GraphState>({
     apiUrl: `${window.location.origin}/api`,
@@ -78,6 +85,31 @@ function App() {
   const getMetadata = thread.getMessagesMetadata;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const history = (thread.history ?? []) as any[];
+
+  // Persist autoApproveTools to sessionStorage
+  useEffect(() => {
+    sessionStorage.setItem("lg:autoApproveTools", JSON.stringify([...autoApproveTools]));
+  }, [autoApproveTools]);
+
+  // Auto-approve: when an interrupt arrives for a tool in the auto-approve set, respond immediately
+  const autoApprovedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!interrupt) {
+      autoApprovedRef.current = null;
+      return;
+    }
+    const action = interrupt.value?.actionRequests?.[0];
+    if (!action) return;
+    const toolName = action.action as string;
+    // Avoid re-approving the same interrupt
+    const interruptKey = JSON.stringify(interrupt.value);
+    if (autoApprovedRef.current === interruptKey) return;
+
+    if (autoApproveTools.has(toolName) || autoApproveTools.has("*")) {
+      autoApprovedRef.current = interruptKey;
+      thread.submit(null, { command: { resume: { decision: "approve" } } });
+    }
+  }, [interrupt, autoApproveTools, thread]);
 
   const submitMessage = (text: string) => {
     thread.submit(
@@ -97,10 +129,25 @@ function App() {
   const handleEdit = (text: string, metadata: any) => {
     const checkpoint = metadata.firstSeenState?.parent_checkpoint;
     if (!checkpoint) return;
+    const newMessage = { type: "human" as const, content: text };
     thread.submit(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      { messages: [{ type: "human", content: text }] } as any,
-      { checkpoint },
+      { messages: [newMessage] } as any,
+      {
+        checkpoint,
+        streamMode: ["values"],
+        streamSubgraphs: true,
+        streamResumable: true,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        optimisticValues: (prev: any) => {
+          const values = metadata.firstSeenState?.values;
+          if (!values) return prev;
+          return {
+            ...values,
+            messages: [...(values.messages ?? []), newMessage],
+          };
+        },
+      },
     );
   };
 
@@ -108,7 +155,12 @@ function App() {
   const handleRegenerate = (metadata: any) => {
     const checkpoint = metadata.firstSeenState?.parent_checkpoint;
     if (!checkpoint) return;
-    thread.submit(undefined, { checkpoint });
+    thread.submit(undefined, {
+      checkpoint,
+      streamMode: ["values"],
+      streamSubgraphs: true,
+      streamResumable: true,
+    });
   };
 
   const isEmpty = thread.messages.length === 0 && !thread.isLoading;
@@ -170,7 +222,7 @@ function App() {
         {/* Chat area */}
         <div className="relative flex flex-1 flex-col">
           <ChatContainerRoot className="flex-1 px-4">
-            <ChatContainerContent className="mx-auto max-w-3xl gap-5 py-6">
+            <ChatContainerContent className="mx-auto max-w-3xl gap-3 py-6">
               {/* Empty state */}
               {isEmpty && (
                 <div className="flex flex-1 flex-col items-center justify-center gap-6 pt-24">
@@ -213,6 +265,7 @@ function App() {
                   <ChatMessageItem
                     key={msg.id}
                     message={msg}
+                    allMessages={thread.messages}
                     isStreaming={thread.isLoading && isLast}
                     metadata={meta}
                     onEdit={handleEdit}
@@ -241,6 +294,10 @@ function App() {
                   interrupt={interrupt}
                   onRespond={(response) =>
                     thread.submit(null, { command: { resume: response } })
+                  }
+                  autoApproveTools={autoApproveTools}
+                  onAutoApprove={(toolName) =>
+                    setAutoApproveTools((prev) => new Set([...prev, toolName]))
                   }
                 />
               )}
@@ -319,8 +376,13 @@ function App() {
         {showTimeTravel && (
           <TimeTravelPanel
             history={history}
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            onResumeFrom={(checkpoint) => thread.submit(null, { checkpoint } as any)}
+            onResumeFrom={(checkpoint) => thread.submit(undefined, {
+              checkpoint,
+              streamMode: ["values"],
+              streamSubgraphs: true,
+              streamResumable: true,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            } as any)}
           />
         )}
       </div>
@@ -332,6 +394,7 @@ function App() {
 
 function ChatMessageItem({
   message,
+  allMessages,
   isStreaming,
   metadata,
   onEdit,
@@ -339,6 +402,7 @@ function ChatMessageItem({
   onBranchSwitch,
 }: {
   message: LGMessage;
+  allMessages: LGMessage[];
   isStreaming?: boolean;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   metadata?: any;
@@ -379,15 +443,8 @@ function ChatMessageItem({
         .join("")
     : content;
 
-  // Tool result message
-  if (isTool) {
-    const toolPart: ToolPart = {
-      type: (message.name as string) ?? "tool",
-      state: "output-available",
-      output: { result: content },
-    };
-    return <Tool toolPart={toolPart} className="ml-11" />;
-  }
+  // Tool result messages are merged into the AI tool call card — skip rendering
+  if (isTool) return null;
 
   // AI tool_calls
   const toolCalls = isAI ? (message.tool_calls ?? []) : [];
@@ -402,7 +459,7 @@ function ChatMessageItem({
             </div>
           )}
 
-          <div className="flex-1 space-y-2">
+          <div className="flex-1 space-y-1">
             {/* Reasoning */}
             {reasoningText && (
               <Reasoning isStreaming={isStreaming}>
@@ -441,7 +498,7 @@ function ChatMessageItem({
                   </Button>
                 </div>
               </div>
-            ) : (
+            ) : textContent ? (
               <MessageContent
                 markdown={isAI}
                 id={isAI ? message.id : undefined}
@@ -453,69 +510,75 @@ function ChatMessageItem({
               >
                 {textContent}
               </MessageContent>
-            )}
+            ) : null}
 
-            {/* Tool calls */}
+            {/* Tool calls (merged with tool result output) */}
             {toolCalls.length > 0 && (
               <div className="space-y-1.5">
-                {toolCalls.map((tc: { id: string; name: string; args: Record<string, unknown> }) => (
-                  <Tool
-                    key={tc.id}
-                    toolPart={{
-                      type: tc.name,
-                      state: isStreaming ? "input-streaming" : "input-available",
-                      input: tc.args,
-                      toolCallId: tc.id,
-                    }}
-                  />
-                ))}
+                {toolCalls.map((tc: { id: string; name: string; args: Record<string, unknown> }) => {
+                  const resultMsg = allMessages.find(
+                    (m: LGMessage) => m.type === "tool" && m.tool_call_id === tc.id
+                  );
+                  return (
+                    <Tool
+                      key={tc.id}
+                      toolPart={{
+                        type: tc.name,
+                        state: isStreaming
+                          ? "input-streaming"
+                          : resultMsg
+                            ? "output-available"
+                            : "input-available",
+                        input: tc.args,
+                        output: resultMsg?.content,
+                        toolCallId: tc.id,
+                      }}
+                    />
+                  );
+                })}
               </div>
             )}
 
-            {/* Actions */}
-            {!isEditing && !isStreaming && (
-              <div className="flex items-center gap-1 opacity-0 transition-opacity duration-200 group-hover:opacity-100">
-                {isAI && (
-                  <>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="size-7 text-muted-foreground hover:text-foreground"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        navigator.clipboard.writeText(textContent);
-                        setCopied(true);
-                        setTimeout(() => setCopied(false), 2000);
-                      }}
-                    >
-                      {copied ? (
-                        <CheckIcon className="size-3.5 text-green-500" />
-                      ) : (
-                        <CopyIcon className="size-3.5" />
-                      )}
-                    </Button>
-                    {metadata?.firstSeenState?.parent_checkpoint && onRegenerate && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="size-7 text-muted-foreground hover:text-foreground"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onRegenerate(metadata);
-                        }}
-                      >
-                        <RefreshCwIcon className="size-3.5" />
-                      </Button>
+            {/* Action bar — always visible below message content */}
+            {!isStreaming && !isEditing && (
+              <div className={`flex items-center gap-0.5 ${isHuman ? "justify-end" : ""} opacity-0 transition-opacity duration-150 group-hover:opacity-100`}>
+                {/* Copy */}
+                {textContent && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="size-7 text-muted-foreground hover:text-foreground"
+                    onClick={() => {
+                      navigator.clipboard.writeText(textContent);
+                      setCopied(true);
+                      setTimeout(() => setCopied(false), 2000);
+                    }}
+                  >
+                    {copied ? (
+                      <CheckIcon className="size-3.5 text-green-500" />
+                    ) : (
+                      <CopyIcon className="size-3.5" />
                     )}
-                  </>
+                  </Button>
                 )}
+                {/* Regenerate (AI messages) */}
+                {isAI && metadata?.firstSeenState?.parent_checkpoint && onRegenerate && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="size-7 text-muted-foreground hover:text-foreground"
+                    onClick={() => onRegenerate(metadata)}
+                  >
+                    <RefreshCwIcon className="size-3.5" />
+                  </Button>
+                )}
+                {/* Edit (human messages) */}
                 {isHuman && metadata?.firstSeenState?.parent_checkpoint && onEdit && (
                   <Button
                     variant="ghost"
                     size="sm"
                     className="size-7 text-muted-foreground hover:text-foreground"
-                    onClick={(e) => {
-                      e.stopPropagation();
+                    onClick={() => {
                       setEditText(content);
                       setIsEditing(true);
                     }}
@@ -523,6 +586,7 @@ function ChatMessageItem({
                     <PencilIcon className="size-3.5" />
                   </Button>
                 )}
+                {/* Branch switcher */}
                 {metadata?.branchOptions != null && metadata.branchOptions.length > 1 && onBranchSwitch && (
                   <BranchSwitcher metadata={metadata} onSwitch={onBranchSwitch} />
                 )}
@@ -547,22 +611,26 @@ function BranchSwitcher({ metadata, onSwitch }: { metadata: any; onSwitch: (id: 
   const current = idx >= 0 ? idx + 1 : 1;
 
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">
-      <button
+    <span className="inline-flex items-center gap-0.5 rounded-full bg-muted px-1 py-0.5 text-xs font-medium text-muted-foreground">
+      <Button
+        variant="ghost"
+        size="sm"
         disabled={idx <= 0}
         onClick={(e) => { e.stopPropagation(); onSwitch(branchOptions[idx - 1]); }}
-        className="transition-opacity disabled:opacity-30 hover:text-foreground"
+        className="size-6 rounded-full text-muted-foreground hover:text-foreground"
       >
         &lt;
-      </button>
-      <span>{current}/{branchOptions.length}</span>
-      <button
+      </Button>
+      <span className="px-1">{current}/{branchOptions.length}</span>
+      <Button
+        variant="ghost"
+        size="sm"
         disabled={idx >= branchOptions.length - 1}
         onClick={(e) => { e.stopPropagation(); onSwitch(branchOptions[idx + 1]); }}
-        className="transition-opacity disabled:opacity-30 hover:text-foreground"
+        className="size-6 rounded-full text-muted-foreground hover:text-foreground"
       >
         &gt;
-      </button>
+      </Button>
     </span>
   );
 }
@@ -576,83 +644,161 @@ interface HitlResponse {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function HitlCard({ interrupt, onRespond }: { interrupt: any; onRespond: (r: HitlResponse) => void }) {
+function HitlCard({ interrupt, onRespond, autoApproveTools, onAutoApprove }: {
+  interrupt: any;
+  onRespond: (r: HitlResponse) => void;
+  autoApproveTools?: Set<string>;
+  onAutoApprove?: (toolName: string) => void;
+}) {
   const [mode, setMode] = useState<"review" | "edit" | "reject">("review");
   const [rejectReason, setRejectReason] = useState("");
   const [editedArgs, setEditedArgs] = useState<Record<string, unknown>>({});
 
   const request = interrupt.value;
-  const action = request?.actionRequests?.[0];
-  const config = request?.reviewConfigs?.[0];
-  if (!action || !config) return null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const actions = (request?.actionRequests ?? []) as any[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const configs = (request?.reviewConfigs ?? []) as any[];
+  const config = configs[0];
+  if (actions.length === 0 || !config) return null;
+
+  // Unique tool names for auto-approve
+  const toolNames = [...new Set(actions.map((a: { action: string }) => a.action))];
 
   return (
     <div className="mx-auto my-2 w-full animate-in fade-in-0 slide-in-from-bottom-2 duration-300">
-      <div className="rounded-xl border bg-card p-5 shadow-sm">
-        <div className="flex items-center gap-2.5">
-          <div className="flex size-9 items-center justify-center rounded-lg bg-amber-100 dark:bg-amber-900/30">
-            <ShieldCheckIcon className="size-5 text-amber-600 dark:text-amber-400" />
+      <div className="rounded-xl border border-border bg-card shadow-sm">
+        {/* Header */}
+        <div className="flex items-center gap-2.5 border-b border-border px-4 py-3">
+          <div className="flex size-8 items-center justify-center rounded-lg bg-amber-500/10">
+            <ShieldCheckIcon className="size-4 text-amber-500" />
           </div>
-          <div>
-            <h3 className="font-semibold">Action Review Required</h3>
-            <p className="text-sm text-muted-foreground">
-              {action.description ?? `Agent wants to execute: ${action.action}`}
+          <div className="flex-1">
+            <h3 className="text-sm font-semibold">Review Required</h3>
+            <p className="text-xs text-muted-foreground">
+              {actions.length === 1
+                ? `Agent wants to execute: ${actions[0].action}`
+                : `Agent wants to execute ${actions.length} actions`}
             </p>
           </div>
         </div>
 
-        <pre className="mt-4 overflow-auto rounded-lg bg-muted/60 p-3 text-xs">
-          {JSON.stringify(action.args, null, 2)}
-        </pre>
-
-        {mode === "review" && (
-          <div className="mt-4 flex gap-2">
-            {config.allowedDecisions.includes("approve") && (
-              <Button className="bg-green-600 hover:bg-green-700" onClick={() => onRespond({ decision: "approve" })}>
-                Approve
-              </Button>
-            )}
-            {config.allowedDecisions.includes("reject") && (
-              <Button variant="destructive" onClick={() => setMode("reject")}>Reject</Button>
-            )}
-            {config.allowedDecisions.includes("edit") && (
-              <Button variant="outline" onClick={() => { setEditedArgs(action.args); setMode("edit"); }}>Edit</Button>
-            )}
-          </div>
-        )}
-
-        {mode === "reject" && (
-          <div className="mt-4 space-y-3">
-            <textarea
-              className="w-full resize-none rounded-lg border bg-background p-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
-              placeholder="Reason for rejection..."
-              value={rejectReason}
-              onChange={(e) => setRejectReason(e.target.value)}
-              rows={2}
-            />
-            <div className="flex gap-2">
-              <Button variant="destructive" onClick={() => onRespond({ decision: "reject", reason: rejectReason })}>
-                Confirm Rejection
-              </Button>
-              <Button variant="ghost" onClick={() => setMode("review")}>Back</Button>
+        {/* Tool call list */}
+        <div className="divide-y divide-border">
+          {actions.map((action: { action: string; args: Record<string, unknown>; description?: string }, i: number) => (
+            <div key={i} className="px-4 py-3">
+              <div className="flex items-center gap-2">
+                <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs font-medium">
+                  {action.action}
+                </span>
+                {action.description && (
+                  <span className="text-xs text-muted-foreground">{action.description}</span>
+                )}
+              </div>
+              {action.args && Object.keys(action.args).length > 0 && (
+                <pre className="mt-2 overflow-auto rounded-lg bg-muted/50 p-2.5 font-mono text-xs text-muted-foreground">
+                  {JSON.stringify(action.args, null, 2)}
+                </pre>
+              )}
             </div>
-          </div>
-        )}
+          ))}
+        </div>
 
-        {mode === "edit" && (
-          <div className="mt-4 space-y-3">
-            <textarea
-              className="w-full resize-none rounded-lg border bg-background p-2.5 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-primary/30"
-              value={JSON.stringify(editedArgs, null, 2)}
-              onChange={(e) => { try { setEditedArgs(JSON.parse(e.target.value)); } catch { /* allow while editing */ } }}
-              rows={6}
-            />
-            <div className="flex gap-2">
-              <Button onClick={() => onRespond({ decision: "edit", args: editedArgs })}>Submit Edits</Button>
-              <Button variant="ghost" onClick={() => setMode("review")}>Back</Button>
+        {/* Actions */}
+        <div className="border-t border-border px-4 py-3">
+          {mode === "review" && (
+            <div className="space-y-3">
+              <div className="flex gap-2">
+                {config.allowedDecisions.includes("approve") && (
+                  <Button
+                    size="sm"
+                    onClick={() => onRespond({ decision: "approve" })}
+                  >
+                    Approve{actions.length > 1 ? ` All (${actions.length})` : ""}
+                  </Button>
+                )}
+                {config.allowedDecisions.includes("reject") && (
+                  <Button variant="destructive" size="sm" onClick={() => setMode("reject")}>
+                    Reject
+                  </Button>
+                )}
+                {actions.length === 1 && config.allowedDecisions.includes("edit") && (
+                  <Button variant="outline" size="sm" onClick={() => { setEditedArgs(actions[0].args); setMode("edit"); }}>
+                    Edit
+                  </Button>
+                )}
+              </div>
+              {config.allowedDecisions.includes("approve") && onAutoApprove && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {toolNames.map((name) =>
+                    !autoApproveTools?.has(name) ? (
+                      <Button
+                        key={name}
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 gap-1 px-2 text-[11px] text-muted-foreground"
+                        onClick={() => {
+                          onAutoApprove(name);
+                          onRespond({ decision: "approve" });
+                        }}
+                      >
+                        <ShieldCheckIcon className="size-3" />
+                        Always approve {name}
+                      </Button>
+                    ) : null
+                  )}
+                  {!autoApproveTools?.has("*") && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 gap-1 px-2 text-[11px] text-muted-foreground"
+                      onClick={() => {
+                        onAutoApprove("*");
+                        onRespond({ decision: "approve" });
+                      }}
+                    >
+                      <ShieldCheckIcon className="size-3" />
+                      Always approve all
+                    </Button>
+                  )}
+                </div>
+              )}
             </div>
-          </div>
-        )}
+          )}
+
+          {mode === "reject" && (
+            <div className="space-y-3">
+              <Textarea
+                placeholder="Reason for rejection..."
+                value={rejectReason}
+                onChange={(e) => setRejectReason(e.target.value)}
+                rows={2}
+                className="min-h-0 text-sm"
+              />
+              <div className="flex gap-2">
+                <Button variant="destructive" size="sm" onClick={() => onRespond({ decision: "reject", reason: rejectReason })}>
+                  Confirm Rejection
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => setMode("review")}>Back</Button>
+              </div>
+            </div>
+          )}
+
+          {mode === "edit" && (
+            <div className="space-y-3">
+              <Textarea
+                value={JSON.stringify(editedArgs, null, 2)}
+                onChange={(e) => { try { setEditedArgs(JSON.parse(e.target.value)); } catch { /* allow while editing */ } }}
+                rows={6}
+                className="min-h-0 font-mono text-xs"
+              />
+              <div className="flex gap-2">
+                <Button size="sm" onClick={() => onRespond({ decision: "edit", args: editedArgs })}>Submit Edits</Button>
+                <Button variant="ghost" size="sm" onClick={() => setMode("review")}>Back</Button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -685,7 +831,7 @@ function QueueDisplay({ queue }: { queue: any }) {
       <div className="mx-auto max-w-3xl">
         <div className="flex items-center justify-between text-xs text-muted-foreground">
           <span>Queued ({queue.size})</span>
-          <button className="text-destructive hover:underline" onClick={() => queue.clear()}>Clear</button>
+          <Button variant="ghost" size="sm" className="h-auto px-1 py-0 text-xs text-destructive hover:text-destructive" onClick={() => queue.clear()}>Clear</Button>
         </div>
         <div className="mt-1.5 space-y-1">
           {queue.entries.slice(0, 3).map((entry: { id: string; values: Record<string, unknown> }) => {
@@ -693,9 +839,9 @@ function QueueDisplay({ queue }: { queue: any }) {
             return (
               <div key={entry.id} className="flex items-center justify-between text-xs">
                 <span className="truncate text-muted-foreground">{msgs?.[0]?.content ?? "..."}</span>
-                <button className="ml-2 shrink-0 text-muted-foreground hover:text-destructive" onClick={() => queue.cancel(entry.id)}>
+                <Button variant="ghost" size="sm" className="ml-2 size-5 shrink-0 text-muted-foreground hover:text-destructive" onClick={() => queue.cancel(entry.id)}>
                   <XIcon className="size-3" />
-                </button>
+                </Button>
               </div>
             );
           })}
@@ -707,10 +853,30 @@ function QueueDisplay({ queue }: { queue: any }) {
 
 // ── Time Travel Panel ───────────────────────────────────────
 
+function getLastMessagePreview(messages: LGMessage[]): { type: string; text: string } | null {
+  if (!messages || messages.length === 0) return null;
+  const last = messages[messages.length - 1];
+  const type = last.type ?? "unknown";
+  let text = "";
+  if (typeof last.content === "string") {
+    text = last.content;
+  } else if (Array.isArray(last.content)) {
+    const textBlock = last.content.find((b: { type: string }) => b.type === "text");
+    text = textBlock?.text ?? JSON.stringify(last.content);
+  }
+  return { type, text: text.slice(0, 120) };
+}
+
+function getNodeLabel(state: { next?: string[]; tasks?: Array<{ name: string }> }): string | null {
+  if (state.next && state.next.length > 0) return state.next.join(", ");
+  if (state.tasks && state.tasks.length > 0) return state.tasks.map((t) => t.name).join(", ");
+  return null;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function TimeTravelPanel({ history, onResumeFrom }: { history: any[]; onResumeFrom: (c: any) => void }) {
   return (
-    <div className="flex w-72 flex-col border-l bg-muted/20">
+    <div className="flex w-80 flex-col border-l bg-muted/20">
       <div className="flex items-center gap-2 border-b p-3">
         <HistoryIcon className="size-4 text-muted-foreground" />
         <h3 className="text-sm font-semibold">Time Travel</h3>
@@ -720,18 +886,71 @@ function TimeTravelPanel({ history, onResumeFrom }: { history: any[]; onResumeFr
         <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">No history</div>
       ) : (
         <div className="flex-1 overflow-y-auto p-2">
-          {history.map((state: { checkpoint: { checkpoint_id: string }; tasks?: Array<{ name: string }>; values?: { messages?: unknown[] } }, i: number) => (
-            <div key={state.checkpoint.checkpoint_id} className="group mb-1.5 rounded-lg border bg-card p-3 transition-all hover:shadow-sm">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-medium text-muted-foreground">#{i + 1}</span>
-                <Button variant="ghost" size="sm" className="size-6 opacity-0 transition-opacity group-hover:opacity-100" onClick={() => onResumeFrom(state.checkpoint)}>
-                  <PlayIcon className="size-3" />
-                </Button>
+          {history.map((state: {
+            checkpoint: { checkpoint_id: string };
+            next?: string[];
+            tasks?: Array<{ name: string }>;
+            values?: { messages?: LGMessage[] };
+            metadata?: { step?: number };
+          }, i: number) => {
+            const messages = (state.values?.messages ?? []) as LGMessage[];
+            const preview = getLastMessagePreview(messages);
+            const nodeLabel = getNodeLabel(state);
+            const step = state.metadata?.step ?? history.length - i;
+            const isEnd = !state.next || state.next.length === 0;
+
+            return (
+              <div key={state.checkpoint.checkpoint_id} className="group mb-1.5 rounded-lg border bg-card p-2.5 transition-all hover:shadow-sm">
+                <div className="flex items-center justify-between gap-1">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="text-[11px] font-medium text-muted-foreground shrink-0">
+                      Step {step}
+                    </span>
+                    {nodeLabel && (
+                      <span className="truncate rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                        {isEnd ? "END" : `→ ${nodeLabel}`}
+                      </span>
+                    )}
+                    {!nodeLabel && isEnd && (
+                      <span className="rounded bg-green-500/10 px-1.5 py-0.5 text-[10px] font-medium text-green-600">
+                        END
+                      </span>
+                    )}
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="size-6 shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
+                    onClick={() => onResumeFrom(state.checkpoint)}
+                    title="Resume from here"
+                  >
+                    <PlayIcon className="size-3" />
+                  </Button>
+                </div>
+                {preview && (
+                  <div className="mt-1.5">
+                    <div className="flex items-center gap-1">
+                      <span className={`text-[10px] font-medium ${
+                        preview.type === "human"
+                          ? "text-blue-500"
+                          : preview.type === "ai"
+                            ? "text-violet-500"
+                            : "text-orange-500"
+                      }`}>
+                        {preview.type === "human" ? "User" : preview.type === "ai" ? "AI" : "Tool"}
+                      </span>
+                      <span className="text-[10px] text-muted-foreground">
+                        · {messages.length} msg{messages.length !== 1 ? "s" : ""}
+                      </span>
+                    </div>
+                    <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground leading-relaxed">
+                      {preview.text || "(empty)"}
+                    </p>
+                  </div>
+                )}
               </div>
-              <p className="mt-1 text-sm font-medium">{state.tasks?.[0]?.name ?? "unknown"}</p>
-              <p className="text-xs text-muted-foreground">{(state.values?.messages as unknown[] | undefined)?.length ?? 0} messages</p>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

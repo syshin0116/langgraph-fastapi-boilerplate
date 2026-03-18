@@ -36,6 +36,15 @@ async def _ensure_thread(db: DB, thread_id: str, if_not_exists: str | None = Non
         await db.create_thread(thread_id=thread_id)
 
 
+def _resolve_checkpoint_id(body) -> str | None:
+    """Extract checkpoint_id from request body (checkpoint object or checkpoint_id field)."""
+    if body.checkpoint_id:
+        return body.checkpoint_id
+    if body.checkpoint and isinstance(body.checkpoint, dict):
+        return body.checkpoint.get("checkpoint_id")
+    return None
+
+
 def _resolve_graph_id(assistant_id: str | None) -> str:
     """Resolve graph_id from assistant_id. Non-UUID values are treated as graph_id directly."""
     if not assistant_id:
@@ -85,10 +94,12 @@ async def create_run(
             assistant_id=body.assistant_id,
             assistant_config=assistant_config,
             metadata=body.metadata,
+            stream_mode=body.stream_mode,
             multitask_strategy=body.multitask_strategy,
             interrupt_before=body.interrupt_before,
             interrupt_after=body.interrupt_after,
             webhook=body.webhook,
+            checkpoint_id=_resolve_checkpoint_id(body),
         )
     except RunConflictError as e:
         raise HTTPException(status_code=409, detail=str(e))
@@ -119,12 +130,14 @@ async def stream_run(
             interrupt_before=body.interrupt_before,
             interrupt_after=body.interrupt_after,
             on_disconnect=body.on_disconnect,
+            checkpoint_id=_resolve_checkpoint_id(body),
         )
     except RunConflictError as e:
         raise HTTPException(status_code=409, detail=str(e))
 
     response = EventSourceResponse(event_gen)
     response.headers["Location"] = f"/threads/{thread_id}/runs/{run_id}/stream"
+    response.headers["X-Accel-Buffering"] = "no"
     return response
 
 
@@ -150,6 +163,7 @@ async def wait_run(
             multitask_strategy=body.multitask_strategy,
             interrupt_before=body.interrupt_before,
             interrupt_after=body.interrupt_after,
+            checkpoint_id=_resolve_checkpoint_id(body),
         )
     except RunConflictError as e:
         raise HTTPException(status_code=409, detail=str(e))
@@ -188,7 +202,9 @@ async def stream_existing_run(
 ):
     """Rejoin an existing run's SSE stream (reconnection after disconnect)."""
     event_gen = run_manager.join_stream(thread_id, run_id)
-    return EventSourceResponse(event_gen)
+    response = EventSourceResponse(event_gen)
+    response.headers["X-Accel-Buffering"] = "no"
+    return response
 
 
 @router.post("/threads/{thread_id}/runs/{run_id}/cancel")
@@ -251,6 +267,7 @@ async def stateless_stream_run(
     )
     response = EventSourceResponse(event_gen)
     response.headers["Location"] = f"/threads/{thread_id}/runs/{run_id}/stream"
+    response.headers["X-Accel-Buffering"] = "no"
     return response
 
 

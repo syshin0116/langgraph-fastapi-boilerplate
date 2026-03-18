@@ -112,9 +112,11 @@ class RunManager:
         assistant_config: dict | None = None,
         metadata: dict | None = None,
         multitask_strategy: str = "reject",
+        stream_mode: list[str] | str | None = None,
         interrupt_before: list[str] | str | None = None,
         interrupt_after: list[str] | str | None = None,
         webhook: str | None = None,
+        checkpoint_id: str | None = None,
     ) -> dict[str, Any]:
         """Create a run — executes in background asyncio.Task."""
         if multitask_strategy != "enqueue":
@@ -149,6 +151,8 @@ class RunManager:
                 command=command,
                 config=config,
                 assistant_config=assistant_config,
+                stream_mode=stream_mode,
+                checkpoint_id=checkpoint_id,
             )
         )
         self._active_tasks[run_id] = task
@@ -176,23 +180,40 @@ class RunManager:
         command: dict | None = None,
         config: dict | None = None,
         assistant_config: dict | None = None,
+        stream_mode: list[str] | str | None = None,
+        checkpoint_id: str | None = None,
     ) -> None:
         """Execute a run in the background, publishing events to subscribers."""
         graph = self._get_graph(graph_id)
         lg_config = self._build_config(
-            thread_id, assistant_config=assistant_config, run_config=config
+            thread_id, assistant_config=assistant_config, run_config=config,
+            checkpoint_id=checkpoint_id,
         )
         graph_input = _resolve_input(run_input, command)
+
+        # Normalize stream modes
+        raw_modes = [stream_mode] if isinstance(stream_mode, str) else list(stream_mode or ["values"])
+        modes = _normalize_stream_modes(raw_modes)
 
         try:
             await self.db.update_run_status(run_id, "running")
             await self.db.set_thread_status(thread_id, "busy")
 
-            async for chunk in graph.astream(
-                graph_input, config=lg_config, stream_mode="values", context={}
-            ):
-                event = _format_stream_event("values", chunk)
-                self._publish_event(run_id, event)
+            # Publish metadata event
+            self._publish_event(run_id, {"event": "metadata", "data": json.dumps({"run_id": run_id, "attempt": 1})})
+
+            if len(modes) == 1:
+                async for chunk in graph.astream(
+                    graph_input, config=lg_config, stream_mode=modes[0], context={}
+                ):
+                    event = _format_stream_event(modes[0], chunk)
+                    self._publish_event(run_id, event)
+            else:
+                async for mode, chunk in graph.astream(
+                    graph_input, config=lg_config, stream_mode=modes, context={}
+                ):
+                    event = _format_stream_event(mode, chunk)
+                    self._publish_event(run_id, event)
 
             await self.db.update_run_status(run_id, "success")
             await self.db.set_thread_status(thread_id, "idle")
@@ -262,6 +283,7 @@ class RunManager:
         interrupt_before: list[str] | str | None = None,
         interrupt_after: list[str] | str | None = None,
         on_disconnect: str = "cancel",
+        checkpoint_id: str | None = None,
     ) -> tuple[str, AsyncIterator[dict[str, Any]]]:
         """Create a streaming run. Returns (run_id, event_generator).
 
@@ -287,7 +309,8 @@ class RunManager:
         async def _generate() -> AsyncIterator[dict[str, Any]]:
             graph = self._get_graph(graph_id)
             lg_config = self._build_config(
-                thread_id, assistant_config=assistant_config, run_config=config
+                thread_id, assistant_config=assistant_config, run_config=config,
+                checkpoint_id=checkpoint_id,
             )
             graph_input = _resolve_input(run_input, command)
 
@@ -340,6 +363,7 @@ class RunManager:
         multitask_strategy: str = "reject",
         interrupt_before: list[str] | str | None = None,
         interrupt_after: list[str] | str | None = None,
+        checkpoint_id: str | None = None,
     ) -> dict[str, Any]:
         """Execute a run and wait for the result (synchronous from caller's perspective)."""
         if multitask_strategy != "enqueue":
@@ -360,7 +384,8 @@ class RunManager:
 
         graph = self._get_graph(graph_id)
         lg_config = self._build_config(
-            thread_id, assistant_config=assistant_config, run_config=config
+            thread_id, assistant_config=assistant_config, run_config=config,
+            checkpoint_id=checkpoint_id,
         )
         graph_input = _resolve_input(run_input, command)
 
