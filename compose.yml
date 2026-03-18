@@ -2,15 +2,15 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     ports:
-      - "5433:5432"
+      - "${POSTGRES_PORT:-5433}:5432"
     environment:
-      POSTGRES_DB: postgres
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: pg_isready -U postgres
+      test: pg_isready -U ${POSTGRES_USER:-postgres}
       interval: 5s
       timeout: 1s
       retries: 5
@@ -20,19 +20,19 @@ services:
       context: .
       dockerfile: packages/backend/Dockerfile
     ports:
-      - "8000:8000"
+      - "${BACKEND_PORT:-8000}:8000"
     depends_on:
       postgres:
         condition: service_healthy
     env_file: .env
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/postgres
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-postgres}
 
   frontend:
     build:
       context: packages/frontend
     ports:
-      - "3003:3000"
+      - "${FRONTEND_PORT:-3003}:3000"
     depends_on:
       - backend
 
@@ -40,7 +40,7 @@ services:
   # redis:
   #   image: redis:7-alpine
   #   ports:
-  #     - "6379:6379"
+  #     - "${REDIS_PORT:-6379}:6379"
   #   healthcheck:
   #     test: redis-cli ping
   #     interval: 5s
