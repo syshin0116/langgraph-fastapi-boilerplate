@@ -12,7 +12,7 @@ import {
   Message,
   MessageContent,
 } from "@/components/ui/message";
-import { Tool } from "@/components/ui/tool";
+import { Tool, ToolGroup } from "@/components/ui/tool";
 import {
   Reasoning,
   ReasoningTrigger,
@@ -390,6 +390,40 @@ function App() {
   );
 }
 
+// ── Tool Calls Renderer ─────────────────────────────────────
+
+function ToolCallsRenderer({
+  toolCalls,
+  allMessages,
+  isStreaming,
+}: {
+  toolCalls: Array<{ id: string; name: string; args: Record<string, unknown> }>;
+  allMessages: LGMessage[];
+  isStreaming?: boolean;
+}) {
+  const toolParts = toolCalls.map((tc) => {
+    const resultMsg = allMessages.find(
+      (m: LGMessage) => m.type === "tool" && m.tool_call_id === tc.id
+    );
+    return {
+      type: tc.name,
+      state: (isStreaming
+        ? "input-streaming"
+        : resultMsg
+          ? "output-available"
+          : "input-available") as "input-streaming" | "input-available" | "output-available",
+      input: tc.args,
+      output: resultMsg?.content,
+      toolCallId: tc.id,
+    };
+  });
+
+  if (toolParts.length === 1) {
+    return <Tool toolPart={toolParts[0]} />;
+  }
+  return <ToolGroup tools={toolParts} />;
+}
+
 // ── Chat Message ────────────────────────────────────────────
 
 function ChatMessageItem({
@@ -514,29 +548,7 @@ function ChatMessageItem({
 
             {/* Tool calls (merged with tool result output) */}
             {toolCalls.length > 0 && (
-              <div className="space-y-1.5">
-                {toolCalls.map((tc: { id: string; name: string; args: Record<string, unknown> }) => {
-                  const resultMsg = allMessages.find(
-                    (m: LGMessage) => m.type === "tool" && m.tool_call_id === tc.id
-                  );
-                  return (
-                    <Tool
-                      key={tc.id}
-                      toolPart={{
-                        type: tc.name,
-                        state: isStreaming
-                          ? "input-streaming"
-                          : resultMsg
-                            ? "output-available"
-                            : "input-available",
-                        input: tc.args,
-                        output: resultMsg?.content,
-                        toolCallId: tc.id,
-                      }}
-                    />
-                  );
-                })}
-              </div>
+              <ToolCallsRenderer toolCalls={toolCalls} allMessages={allMessages} isStreaming={isStreaming} />
             )}
 
             {/* Action bar — always visible below message content */}
