@@ -10,7 +10,7 @@ from db import DB
 from schemas import RunCreate, RunResponse
 
 from api.deps import get_db, get_run_manager
-from api.run_manager import RunConflictError, RunManager
+from api.run_manager_base import RunConflictError, RunManagerBase
 
 router = APIRouter(tags=["runs"])
 
@@ -80,7 +80,7 @@ async def create_run(
     thread_id: str,
     body: RunCreate,
     db: Annotated[DB, Depends(get_db)],
-    run_manager: Annotated[RunManager, Depends(get_run_manager)],
+    run_manager: Annotated[RunManagerBase, Depends(get_run_manager)],
 ):
     await _ensure_thread(db, thread_id, body.if_not_exists)
     assistant_config = await _get_assistant_config(db, body.assistant_id)
@@ -111,7 +111,7 @@ async def stream_run(
     thread_id: str,
     body: RunCreate,
     db: Annotated[DB, Depends(get_db)],
-    run_manager: Annotated[RunManager, Depends(get_run_manager)],
+    run_manager: Annotated[RunManagerBase, Depends(get_run_manager)],
 ):
     await _ensure_thread(db, thread_id, body.if_not_exists)
     assistant_config = await _get_assistant_config(db, body.assistant_id)
@@ -146,7 +146,7 @@ async def wait_run(
     thread_id: str,
     body: RunCreate,
     db: Annotated[DB, Depends(get_db)],
-    run_manager: Annotated[RunManager, Depends(get_run_manager)],
+    run_manager: Annotated[RunManagerBase, Depends(get_run_manager)],
 ):
     await _ensure_thread(db, thread_id, body.if_not_exists)
     assistant_config = await _get_assistant_config(db, body.assistant_id)
@@ -198,7 +198,7 @@ async def get_run(
 async def stream_existing_run(
     thread_id: str,
     run_id: str,
-    run_manager: Annotated[RunManager, Depends(get_run_manager)],
+    run_manager: Annotated[RunManagerBase, Depends(get_run_manager)],
 ):
     """Rejoin an existing run's SSE stream (reconnection after disconnect)."""
     event_gen = run_manager.join_stream(thread_id, run_id)
@@ -211,7 +211,7 @@ async def stream_existing_run(
 async def cancel_run(
     thread_id: str,
     run_id: str,
-    run_manager: Annotated[RunManager, Depends(get_run_manager)],
+    run_manager: Annotated[RunManagerBase, Depends(get_run_manager)],
 ):
     await run_manager.cancel_run(thread_id, run_id)
     return {"ok": True}
@@ -221,7 +221,7 @@ async def cancel_run(
 async def join_run(
     thread_id: str,
     run_id: str,
-    run_manager: Annotated[RunManager, Depends(get_run_manager)],
+    run_manager: Annotated[RunManagerBase, Depends(get_run_manager)],
 ):
     result = await run_manager.join_run(thread_id, run_id)
     if result is None:
@@ -248,7 +248,7 @@ async def delete_run(
 async def stateless_stream_run(
     body: RunCreate,
     db: Annotated[DB, Depends(get_db)],
-    run_manager: Annotated[RunManager, Depends(get_run_manager)],
+    run_manager: Annotated[RunManagerBase, Depends(get_run_manager)],
 ):
     thread_id = str(uuid.uuid4())
     await db.create_thread(thread_id=thread_id)
@@ -275,7 +275,7 @@ async def stateless_stream_run(
 async def stateless_create_run(
     body: RunCreate,
     db: Annotated[DB, Depends(get_db)],
-    run_manager: Annotated[RunManager, Depends(get_run_manager)],
+    run_manager: Annotated[RunManagerBase, Depends(get_run_manager)],
 ):
     thread_id = str(uuid.uuid4())
     await db.create_thread(thread_id=thread_id)
@@ -299,7 +299,7 @@ async def stateless_create_run(
 async def stateless_wait_run(
     body: RunCreate,
     db: Annotated[DB, Depends(get_db)],
-    run_manager: Annotated[RunManager, Depends(get_run_manager)],
+    run_manager: Annotated[RunManagerBase, Depends(get_run_manager)],
 ):
     thread_id = str(uuid.uuid4())
     await db.create_thread(thread_id=thread_id)

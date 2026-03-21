@@ -21,6 +21,7 @@ from api.routes.runs import router as runs_router
 from api.routes.store import router as store_router
 from api.routes.threads import router as threads_router
 from api.run_manager import RunManager
+from api.run_manager_base import RunManagerBase
 
 load_dotenv()
 setup_logging()
@@ -56,7 +57,18 @@ async def lifespan(app: FastAPI):
             for gid, builder in _graphs_registry.items()
         }
 
-        run_manager = RunManager(db, checkpointer, compiled_graphs)
+        redis_url = os.environ.get("REDIS_URL")
+        run_manager: RunManagerBase
+        if redis_url:
+            from api.arq_run_manager import ArqRunManager
+
+            arq_manager = ArqRunManager(db, checkpointer, compiled_graphs, redis_url)
+            await arq_manager.setup()
+            run_manager = arq_manager
+            logger.info("Using ArqRunManager (Redis: %s)", redis_url)
+        else:
+            run_manager = RunManager(db, checkpointer, compiled_graphs)
+            logger.info("Using asyncio RunManager (no Redis)")
 
         app.state.checkpointer = checkpointer
         app.state.db = db
@@ -65,6 +77,9 @@ async def lifespan(app: FastAPI):
 
         logger.info("Application started — graphs: %s", list(compiled_graphs.keys()))
         yield
+
+        if redis_url and hasattr(run_manager, "close"):
+            await run_manager.close()
         logger.info("Application shutting down")
 
 

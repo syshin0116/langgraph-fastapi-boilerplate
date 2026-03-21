@@ -34,16 +34,47 @@ services:
     depends_on:
       - backend
 
-  # Uncomment when scaling out with Redis + ARQ worker
-  # redis:
-  #   image: redis:7-alpine
-  #   ports:
-  #     - "${REDIS_PORT:-6379}:6379"
-  #   healthcheck:
-  #     test: redis-cli ping
-  #     interval: 5s
-  #     timeout: 1s
-  #     retries: 5
+  # ── Redis + ARQ worker (activate with: docker compose --profile redis up) ──
+
+  redis:
+    image: redis:7-alpine
+    profiles: ["redis"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: redis-cli ping
+      interval: 5s
+      timeout: 1s
+      retries: 5
+
+  backend-redis:
+    build: .
+    profiles: ["redis"]
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-postgres}
+      REDIS_URL: redis://redis:6379
+
+  worker:
+    build: .
+    profiles: ["redis"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-postgres}
+      REDIS_URL: redis://redis:6379
+    command: ["uv", "run", "arq", "worker.WorkerSettings"]
 
 volumes:
   pgdata:

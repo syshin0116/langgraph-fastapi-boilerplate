@@ -8,7 +8,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from db import DB
 
-from api.run_manager import RunManager
+from api.run_manager_base import RunManagerBase
 
 
 def get_checkpointer(request: Request) -> AsyncPostgresSaver:
@@ -19,7 +19,7 @@ def get_db(request: Request) -> DB:
     return request.app.state.db
 
 
-def get_run_manager(request: Request) -> RunManager:
+def get_run_manager(request: Request) -> RunManagerBase:
     return request.app.state.run_manager
 
 
