@@ -4,8 +4,8 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from core.db import DB
-from core.schemas import (
+from db import DB
+from schemas import (
     ItemResponse,
     StoreItemDelete,
     StoreItemPut,
@@ -13,7 +13,7 @@ from core.schemas import (
     StoreNamespaceList,
 )
 
-from backend.deps import get_db
+from api.deps import get_db
 
 router = APIRouter(prefix="/store", tags=["store"])
 

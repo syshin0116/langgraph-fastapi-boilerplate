@@ -5,7 +5,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
-from core.agent.graph import builder
+from agent.graph import builder
 
 
 @pytest.fixture
@@ -31,10 +31,10 @@ async def test_hitl_interrupt_on_tool_call(compiled_graph):
     """
     from langgraph.checkpoint.memory import InMemorySaver
     from langgraph.graph import StateGraph, START, END
-    from core.agent.state import State
+    from agent.state import State
 
     # Build a minimal graph that just runs human_review
-    from core.agent.graph import human_review
+    from agent.graph import human_review
 
     mini_builder = StateGraph(State)
     mini_builder.add_node("human_review", human_review)
@@ -81,8 +81,8 @@ async def test_hitl_interrupt_on_tool_call(compiled_graph):
 @pytest.mark.asyncio
 async def test_hitl_no_interrupt_without_tool_calls():
     """When AI message has no tool calls, human_review should skip."""
-    from core.agent.graph import human_review
-    from core.agent.state import State
+    from agent.graph import human_review
+    from agent.state import State
 
     state = State(
         messages=[
@@ -102,9 +102,9 @@ async def test_hitl_approve_resumes_to_tools():
     """After approving, the graph should proceed to tool execution."""
     from langgraph.checkpoint.memory import InMemorySaver
     from langgraph.graph import StateGraph, START, END
-    from core.agent.graph import human_review
-    from core.agent.state import State
-    from core.agent.tools import TOOLS
+    from agent.graph import human_review
+    from agent.state import State
+    from agent.tools import TOOLS
     from langgraph.prebuilt import ToolNode
 
     mini_builder = StateGraph(State)
@@ -153,8 +153,8 @@ async def test_hitl_reject_returns_rejection_message():
     """After rejecting, the graph should add rejection messages and go to call_model."""
     from langgraph.checkpoint.memory import InMemorySaver
     from langgraph.graph import StateGraph, START, END
-    from core.agent.graph import human_review
-    from core.agent.state import State
+    from agent.graph import human_review
+    from agent.state import State
 
     mini_builder = StateGraph(State)
     mini_builder.add_node("human_review", human_review)
@@ -197,8 +197,8 @@ async def test_hitl_reject_returns_rejection_message():
 
 def test_graph_node_routing():
     """Verify the routing logic: tool_calls → human_review, no tool_calls → END."""
-    from core.agent.graph import route_model_output
-    from core.agent.state import State
+    from agent.graph import route_model_output
+    from agent.state import State
 
     # No tool calls → END
     state_no_tools = State(

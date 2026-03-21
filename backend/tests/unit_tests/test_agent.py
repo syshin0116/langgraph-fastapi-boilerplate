@@ -1,9 +1,9 @@
 """Unit tests for the agent module."""
 
-from core.agent.context import Context
-from core.agent.graph import builder, graph
-from core.agent.tools import TOOLS, get_weather, search_web
-from core.agent.utils import load_chat_model
+from agent.context import Context
+from agent.graph import builder, graph
+from agent.tools import TOOLS, get_weather, search_web
+from agent.utils import load_chat_model
 
 
 def test_graph_compiles():

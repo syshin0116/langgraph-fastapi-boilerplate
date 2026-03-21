@@ -4,10 +4,10 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from core.db import DB
-from core.schemas import CronCreate, CronResponse, CronSearch, CronUpdate
+from db import DB
+from schemas import CronCreate, CronResponse, CronSearch, CronUpdate
 
-from backend.deps import get_db
+from api.deps import get_db
 
 router = APIRouter(tags=["crons"])
 

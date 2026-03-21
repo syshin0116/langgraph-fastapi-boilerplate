@@ -28,7 +28,7 @@ from langchain_core.messages import AIMessage
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph.state import CompiledStateGraph
 
-from core.db import DB
+from db import DB
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,7 @@ class RunManager:
         self._thread_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._event_queues: dict[str, list[asyncio.Queue]] = defaultdict(list)
         self._run_threads: dict[str, str] = {}  # run_id → thread_id
+        self._event_buffers: dict[str, list[dict | None]] = {}  # run_id → buffered events
 
     def _get_graph(self, graph_id: str = "agent") -> CompiledStateGraph:
         graph = self.graphs.get(graph_id)
@@ -141,6 +142,7 @@ class RunManager:
 
         run_id = str(run_record["run_id"])
         self._run_threads[run_id] = thread_id
+        self._event_buffers[run_id] = []  # buffer events for late-joining subscribers
 
         task = asyncio.create_task(
             self._execute_run(
@@ -160,13 +162,17 @@ class RunManager:
         def _cleanup(t: asyncio.Task) -> None:
             self._active_tasks.pop(run_id, None)
             self._run_threads.pop(run_id, None)
+            # Keep _event_buffers for late join_stream calls; cleaned up in join_stream
 
         task.add_done_callback(_cleanup)
 
         return run_record
 
     def _publish_event(self, run_id: str, event: dict | None) -> None:
-        """Push an event to all subscriber queues for a run."""
+        """Push an event to all subscriber queues and buffer for late joiners."""
+        buf = self._event_buffers.get(run_id)
+        if buf is not None:
+            buf.append(event)
         for q in self._event_queues.get(run_id, []):
             q.put_nowait(event)
 
@@ -191,8 +197,11 @@ class RunManager:
         )
         graph_input = _resolve_input(run_input, command)
 
-        # Normalize stream modes
-        raw_modes = [stream_mode] if isinstance(stream_mode, str) else list(stream_mode or ["values"])
+        # Normalize stream modes — background runs default to all common modes
+        # (matches LangGraph Platform: "Background runs default to having the
+        # union of all stream modes enabled")
+        _default_bg_modes = ["values", "messages-tuple", "updates"]
+        raw_modes = [stream_mode] if isinstance(stream_mode, str) else list(stream_mode or _default_bg_modes)
         modes = _normalize_stream_modes(raw_modes)
 
         try:
@@ -236,13 +245,50 @@ class RunManager:
         thread_id: str,
         run_id: str,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Subscribe to events from an existing run (for SSE rejoin after disconnect)."""
+        """Subscribe to events from an existing run (for SSE rejoin after disconnect).
+
+        Uses an event buffer to replay events that fired before the subscriber
+        connected — this prevents the race condition where create_run() completes
+        before the client calls GET /runs/{run_id}/stream.
+        """
         yield {"event": "metadata", "data": json.dumps({"run_id": run_id, "attempt": 1})}
 
+        buf = self._event_buffers.get(run_id)
+
+        if buf is not None:
+            # Subscribe to live events FIRST (single-threaded asyncio: no
+            # events fire between append and len snapshot)
+            queue: asyncio.Queue = asyncio.Queue()
+            self._event_queues[run_id].append(queue)
+            snapshot_len = len(buf)
+
+            try:
+                # Replay buffered events (everything before subscription)
+                for i in range(snapshot_len):
+                    event = buf[i]
+                    if event is None:  # run already finished
+                        return
+                    yield event
+
+                # Drain live queue (events after subscription point)
+                while True:
+                    event = await queue.get()
+                    if event is None:
+                        break
+                    yield event
+            finally:
+                queues = self._event_queues.get(run_id, [])
+                if queue in queues:
+                    queues.remove(queue)
+                # Clean up buffer if run is done and no more subscribers
+                if not self._event_queues.get(run_id):
+                    self._event_buffers.pop(run_id, None)
+            return
+
+        # No buffer — run was not created via create_run (legacy path)
         task = self._active_tasks.get(run_id)
 
         if not task or task.done():
-            # Run already completed — return final state from checkpointer
             config = {"configurable": {"thread_id": thread_id}}
             snapshot = await self.checkpointer.aget_tuple(config)
             if snapshot:
@@ -250,14 +296,12 @@ class RunManager:
                 yield _format_stream_event("values", state)
             return
 
-        # Subscribe to live events from the running task
-        queue: asyncio.Queue = asyncio.Queue()
+        queue = asyncio.Queue()
         self._event_queues[run_id].append(queue)
-
         try:
             while True:
                 event = await queue.get()
-                if event is None:  # sentinel — run finished
+                if event is None:
                     break
                 yield event
         finally:

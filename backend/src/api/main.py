@@ -10,17 +10,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg_pool import AsyncConnectionPool
 
-from core.agent.graph import builder as agent_builder
-from core.db import DB
+from agent.graph import builder as agent_builder
+from db import DB
 
-from backend.logging_config import setup_logging
-from backend.middleware import RequestLoggingMiddleware
-from backend.routes.assistants import router as assistants_router
-from backend.routes.crons import router as crons_router
-from backend.routes.runs import router as runs_router
-from backend.routes.store import router as store_router
-from backend.routes.threads import router as threads_router
-from backend.run_manager import RunManager
+from api.logging_config import setup_logging
+from api.middleware import RequestLoggingMiddleware
+from api.routes.assistants import router as assistants_router
+from api.routes.crons import router as crons_router
+from api.routes.runs import router as runs_router
+from api.routes.store import router as store_router
+from api.routes.threads import router as threads_router
+from api.run_manager import RunManager
 
 load_dotenv()
 setup_logging()

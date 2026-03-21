@@ -4,15 +4,15 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from core.db import DB
-from core.schemas import (
+from db import DB
+from schemas import (
     AssistantCreate,
     AssistantResponse,
     AssistantSearch,
     AssistantUpdate,
 )
 
-from backend.deps import get_db, get_graph_registry
+from api.deps import get_db, get_graph_registry
 
 router = APIRouter(prefix="/assistants", tags=["assistants"])
 

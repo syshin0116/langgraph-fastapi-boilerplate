@@ -6,11 +6,11 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sse_starlette.sse import EventSourceResponse
 
-from core.db import DB
-from core.schemas import RunCreate, RunResponse
+from db import DB
+from schemas import RunCreate, RunResponse
 
-from backend.deps import get_db, get_run_manager
-from backend.run_manager import RunConflictError, RunManager
+from api.deps import get_db, get_run_manager
+from api.run_manager import RunConflictError, RunManager
 
 router = APIRouter(tags=["runs"])
 

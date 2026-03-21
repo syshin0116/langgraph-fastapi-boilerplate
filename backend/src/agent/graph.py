@@ -14,10 +14,10 @@ from langgraph.prebuilt import ToolNode
 from langgraph.runtime import Runtime
 from langgraph.types import Command, interrupt
 
-from core.agent.context import Context
-from core.agent.state import InputState, State
-from core.agent.tools import TOOLS
-from core.agent.utils import load_chat_model
+from agent.context import Context
+from agent.state import InputState, State
+from agent.tools import TOOLS
+from agent.utils import load_chat_model
 
 logger = logging.getLogger(__name__)
 

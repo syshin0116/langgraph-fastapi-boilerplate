@@ -31,7 +31,7 @@ class JsonFormatter(logging.Formatter):
 
 def setup_logging() -> None:
     """Load logging.yaml and apply LOG_LEVEL / LOG_FORMAT overrides."""
-    config_path = Path(__file__).resolve().parent.parent.parent / "logging.yaml"
+    config_path = Path(__file__).resolve().parent / "logging.yaml"
 
     if config_path.exists():
         with open(config_path) as f:

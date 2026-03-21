@@ -11,7 +11,7 @@ formatters:
     datefmt: "%Y-%m-%d %H:%M:%S"
 
   json:
-    (): backend.logging_config.JsonFormatter
+    (): api.logging_config.JsonFormatter
 
 handlers:
   console:
@@ -28,12 +28,12 @@ handlers:
 
 loggers:
   # ── Application ──
-  backend:
+  api:
     level: DEBUG
     handlers: [console]
     propagate: false
 
-  backend.middleware:
+  api.middleware:
     level: INFO
     handlers: [console]
     propagate: false

@@ -3,9 +3,9 @@
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from core.agent.utils import get_message_text
-from core.db import DB
-from core.schemas import (
+from agent.utils import get_message_text
+from db import DB
+from schemas import (
     ThreadCreate,
     ThreadResponse,
     ThreadSearch,
@@ -15,7 +15,7 @@ from core.schemas import (
 
 from langgraph.graph.state import CompiledStateGraph
 
-from backend.deps import get_db, resolve_graph
+from api.deps import get_db, resolve_graph
 
 router = APIRouter(prefix="/threads", tags=["threads"])
 

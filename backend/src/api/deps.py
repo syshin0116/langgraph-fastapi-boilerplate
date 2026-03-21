@@ -6,9 +6,9 @@ from fastapi import Request
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph.state import CompiledStateGraph
 
-from core.db import DB
+from db import DB
 
-from backend.run_manager import RunManager
+from api.run_manager import RunManager
 
 
 def get_checkpointer(request: Request) -> AsyncPostgresSaver:
