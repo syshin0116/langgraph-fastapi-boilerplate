@@ -221,7 +221,7 @@ function App() {
       <div className="flex flex-1 overflow-hidden">
         {/* Chat area */}
         <div className="relative flex flex-1 flex-col">
-          <ChatContainerRoot className="flex-1 px-4">
+          <ChatContainerRoot className="relative flex-1 px-4">
             <ChatContainerContent className="mx-auto max-w-3xl gap-3 py-6">
               {/* Empty state */}
               {isEmpty && (
@@ -305,7 +305,7 @@ function App() {
               <ChatContainerScrollAnchor />
             </ChatContainerContent>
 
-            <ScrollButton className="absolute bottom-4 right-4" />
+            <ScrollButton className="absolute bottom-4 right-4 z-10 shadow-md" />
           </ChatContainerRoot>
 
           {/* Error */}
@@ -407,10 +407,10 @@ function ToolCallsRenderer({
     );
     return {
       type: tc.name,
-      state: (isStreaming
-        ? "input-streaming"
-        : resultMsg
-          ? "output-available"
+      state: (resultMsg
+        ? "output-available"
+        : isStreaming
+          ? "input-streaming"
           : "input-available") as "input-streaming" | "input-available" | "output-available",
       input: tc.args,
       output: resultMsg?.content,

@@ -34,12 +34,13 @@ async def call_model(
         system_time=datetime.now(tz=UTC).isoformat()
     )
 
-    response = cast(
-        AIMessage,
-        await model.ainvoke(
-            [{"role": "system", "content": system_message}, *state.messages]
-        ),
-    )
+    # Use astream so LangGraph's StreamMessagesHandler can emit per-token events
+    response = None
+    async for chunk in model.astream(
+        [{"role": "system", "content": system_message}, *state.messages]
+    ):
+        response = chunk if response is None else response + chunk
+    response = cast(AIMessage, response)
 
     if state.is_last_step and response.tool_calls:
         return {
