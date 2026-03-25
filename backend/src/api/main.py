@@ -11,8 +11,6 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg_pool import AsyncConnectionPool
 
 from agent.graph import builder as agent_builder
-from db import DB
-
 from api.logging_config import setup_logging
 from api.middleware import RequestLoggingMiddleware
 from api.routes.assistants import router as assistants_router
@@ -22,6 +20,7 @@ from api.routes.store import router as store_router
 from api.routes.threads import router as threads_router
 from api.run_manager import RunManager
 from api.run_manager_base import RunManagerBase
+from db import DB
 
 load_dotenv()
 setup_logging()

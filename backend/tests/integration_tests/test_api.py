@@ -1,8 +1,8 @@
 """Integration tests for the API endpoints."""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from httpx import ASGITransport, AsyncClient
 
 

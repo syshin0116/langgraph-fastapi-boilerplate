@@ -18,15 +18,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
 import redis.asyncio as aioredis
 from arq import create_pool
 from arq.connections import ArqRedis, RedisSettings
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph.state import CompiledStateGraph
-
-from db import DB
 
 from api.run_manager_base import (
     DEFAULT_BG_STREAM_MODES,
@@ -35,8 +34,8 @@ from api.run_manager_base import (
     format_stream_event,
     normalize_stream_modes,
     resolve_input,
-    serialize_value,
 )
+from db import DB
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +192,10 @@ class ArqRunManager(RunManagerBase):
     async def join_stream(
         self, thread_id: str, run_id: str
     ) -> AsyncIterator[dict[str, Any]]:
-        yield {"event": "metadata", "data": json.dumps({"run_id": run_id, "attempt": 1})}
+        yield {
+            "event": "metadata",
+            "data": json.dumps({"run_id": run_id, "attempt": 1}),
+        }
 
         pubsub = self.redis.pubsub()
         channel = _key(_EVT_CHANNEL, run_id)
@@ -269,7 +271,10 @@ class ArqRunManager(RunManagerBase):
             modes = [stream_mode] if isinstance(stream_mode, str) else list(stream_mode)
             modes = normalize_stream_modes(modes)
 
-            yield {"event": "metadata", "data": json.dumps({"run_id": run_id, "attempt": 1})}
+            yield {
+                "event": "metadata",
+                "data": json.dumps({"run_id": run_id, "attempt": 1}),
+            }
 
             try:
                 if len(modes) == 1:

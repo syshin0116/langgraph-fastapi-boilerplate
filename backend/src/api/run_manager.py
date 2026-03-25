@@ -12,15 +12,15 @@ For Redis + ARQ scaling, see arq_run_manager.py.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from collections import defaultdict
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph.state import CompiledStateGraph
-
-from db import DB
 
 from api.run_manager_base import (
     DEFAULT_BG_STREAM_MODES,
@@ -29,8 +29,8 @@ from api.run_manager_base import (
     format_stream_event,
     normalize_stream_modes,
     resolve_input,
-    serialize_value,
 )
+from db import DB
 
 # Re-export for backwards compatibility
 __all__ = ["RunConflictError", "RunManager"]
@@ -54,7 +54,9 @@ class RunManager(RunManagerBase):
         self._thread_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._event_queues: dict[str, list[asyncio.Queue]] = defaultdict(list)
         self._run_threads: dict[str, str] = {}  # run_id → thread_id
-        self._event_buffers: dict[str, list[dict | None]] = {}  # run_id → buffered events
+        self._event_buffers: dict[
+            str, list[dict | None]
+        ] = {}  # run_id → buffered events
 
     def _get_graph(self, graph_id: str = "agent") -> CompiledStateGraph:
         graph = self.graphs.get(graph_id)
@@ -191,12 +193,18 @@ class RunManager(RunManagerBase):
         """Execute a run in the background, publishing events to subscribers."""
         graph = self._get_graph(graph_id)
         lg_config = self._build_config(
-            thread_id, assistant_config=assistant_config, run_config=config,
+            thread_id,
+            assistant_config=assistant_config,
+            run_config=config,
             checkpoint_id=checkpoint_id,
         )
         graph_input = resolve_input(run_input, command)
 
-        raw_modes = [stream_mode] if isinstance(stream_mode, str) else list(stream_mode or DEFAULT_BG_STREAM_MODES)
+        raw_modes = (
+            [stream_mode]
+            if isinstance(stream_mode, str)
+            else list(stream_mode or DEFAULT_BG_STREAM_MODES)
+        )
         modes = normalize_stream_modes(raw_modes)
 
         try:
@@ -204,7 +212,13 @@ class RunManager(RunManagerBase):
             await self.db.set_thread_status(thread_id, "busy")
 
             # Publish metadata event
-            self._publish_event(run_id, {"event": "metadata", "data": json.dumps({"run_id": run_id, "attempt": 1})})
+            self._publish_event(
+                run_id,
+                {
+                    "event": "metadata",
+                    "data": json.dumps({"run_id": run_id, "attempt": 1}),
+                },
+            )
 
             if len(modes) == 1:
                 async for chunk in graph.astream(
@@ -228,7 +242,9 @@ class RunManager(RunManagerBase):
             logger.exception("Run %s failed: %s", run_id, e)
             await self.db.update_run_status(run_id, "error")
             await self.db.set_thread_status(thread_id, "error")
-            self._publish_event(run_id, {"event": "error", "data": json.dumps({"error": str(e)})})
+            self._publish_event(
+                run_id, {"event": "error", "data": json.dumps({"error": str(e)})}
+            )
         finally:
             self._publish_event(run_id, None)  # sentinel — end of stream
             self._event_queues.pop(run_id, None)
@@ -246,7 +262,10 @@ class RunManager(RunManagerBase):
         connected — this prevents the race condition where create_run() completes
         before the client calls GET /runs/{run_id}/stream.
         """
-        yield {"event": "metadata", "data": json.dumps({"run_id": run_id, "attempt": 1})}
+        yield {
+            "event": "metadata",
+            "data": json.dumps({"run_id": run_id, "attempt": 1}),
+        }
 
         buf = self._event_buffers.get(run_id)
 
@@ -348,7 +367,9 @@ class RunManager(RunManagerBase):
         async def _generate() -> AsyncIterator[dict[str, Any]]:
             graph = self._get_graph(graph_id)
             lg_config = self._build_config(
-                thread_id, assistant_config=assistant_config, run_config=config,
+                thread_id,
+                assistant_config=assistant_config,
+                run_config=config,
                 checkpoint_id=checkpoint_id,
             )
             graph_input = resolve_input(run_input, command)
@@ -358,7 +379,10 @@ class RunManager(RunManagerBase):
             modes = normalize_stream_modes(modes)
 
             # Metadata event (matches LangGraph Platform format)
-            yield {"event": "metadata", "data": json.dumps({"run_id": run_id, "attempt": 1})}
+            yield {
+                "event": "metadata",
+                "data": json.dumps({"run_id": run_id, "attempt": 1}),
+            }
 
             try:
                 if len(modes) == 1:
@@ -423,7 +447,9 @@ class RunManager(RunManagerBase):
 
         graph = self._get_graph(graph_id)
         lg_config = self._build_config(
-            thread_id, assistant_config=assistant_config, run_config=config,
+            thread_id,
+            assistant_config=assistant_config,
+            run_config=config,
             checkpoint_id=checkpoint_id,
         )
         graph_input = resolve_input(run_input, command)
@@ -450,10 +476,8 @@ class RunManager(RunManagerBase):
         task = self._active_tasks.get(run_id)
         if task and not task.done():
             task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await task
-            except asyncio.CancelledError:
-                pass
 
         await self.db.update_run_status(run_id, "interrupted")
         await self.db.set_thread_status(thread_id, "interrupted")

@@ -33,6 +33,24 @@ asyncio_mode = "auto"
 line-length = 88
 target-version = "py312"
 
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "F",      # pyflakes
+    "I",      # isort (import 정렬)
+    "N",      # pep8-naming
+    "UP",     # pyupgrade (최신 문법 권장)
+    "B",      # flake8-bugbear (일반적 버그 패턴)
+    "C4",     # flake8-comprehensions
+    "SIM",    # flake8-simplify
+    "ASYNC",  # flake8-async
+    "FAST",   # FastAPI 전용 규칙
+]
+ignore = ["E501"]  # line-length는 formatter에 위임
+
+[tool.ruff.format]
+quote-style = "double"
+
 [dependency-groups]
 dev = [
     "pytest",

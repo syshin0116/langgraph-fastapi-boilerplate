@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from psycopg.rows import dict_row
@@ -75,7 +75,7 @@ _SETUP_STATEMENTS = [
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _uuid() -> str:
@@ -325,9 +325,7 @@ class DB:
 
     async def delete_thread(self, thread_id: str) -> None:
         async with self._conn() as conn:
-            await conn.execute(
-                "DELETE FROM threads WHERE thread_id = %s", (thread_id,)
-            )
+            await conn.execute("DELETE FROM threads WHERE thread_id = %s", (thread_id,))
 
     async def search_threads(
         self,
@@ -453,9 +451,7 @@ class DB:
                 (run_id, thread_id),
             )
 
-    async def get_active_run_for_thread(
-        self, thread_id: str
-    ) -> dict[str, Any] | None:
+    async def get_active_run_for_thread(self, thread_id: str) -> dict[str, Any] | None:
         async with self._conn() as conn:
             row = await (
                 await conn.execute(
@@ -482,9 +478,7 @@ class DB:
                 (ns, key, json.dumps(value), now, now),
             )
 
-    async def store_get(
-        self, namespace: list[str], key: str
-    ) -> dict[str, Any] | None:
+    async def store_get(self, namespace: list[str], key: str) -> dict[str, Any] | None:
         ns = _ns_to_str(namespace)
         async with self._conn() as conn:
             row = await (
@@ -622,9 +616,7 @@ class DB:
     async def get_cron(self, cron_id: str) -> dict[str, Any] | None:
         async with self._conn() as conn:
             row = await (
-                await conn.execute(
-                    "SELECT * FROM crons WHERE cron_id = %s", (cron_id,)
-                )
+                await conn.execute("SELECT * FROM crons WHERE cron_id = %s", (cron_id,))
             ).fetchone()
             return dict(row) if row else None
 
@@ -655,9 +647,7 @@ class DB:
 
     async def delete_cron(self, cron_id: str) -> None:
         async with self._conn() as conn:
-            await conn.execute(
-                "DELETE FROM crons WHERE cron_id = %s", (cron_id,)
-            )
+            await conn.execute("DELETE FROM crons WHERE cron_id = %s", (cron_id,))
 
     async def search_crons(
         self,

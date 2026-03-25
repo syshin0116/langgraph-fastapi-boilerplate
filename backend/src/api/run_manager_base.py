@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
 
 class RunConflictError(Exception):
@@ -83,9 +84,7 @@ class RunManagerBase(ABC):
     async def cancel_run(self, thread_id: str, run_id: str) -> None: ...
 
     @abstractmethod
-    async def join_run(
-        self, thread_id: str, run_id: str
-    ) -> dict[str, Any] | None: ...
+    async def join_run(self, thread_id: str, run_id: str) -> dict[str, Any] | None: ...
 
 
 # ---- Shared helpers ----

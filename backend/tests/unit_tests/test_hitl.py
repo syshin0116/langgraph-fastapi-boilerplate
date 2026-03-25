@@ -30,11 +30,11 @@ async def test_hitl_interrupt_on_tool_call(compiled_graph):
     a tool-calling AI message, and verify the graph pauses with __interrupt__.
     """
     from langgraph.checkpoint.memory import InMemorySaver
-    from langgraph.graph import StateGraph, START, END
-    from agent.state import State
+    from langgraph.graph import END, START, StateGraph
 
     # Build a minimal graph that just runs human_review
     from agent.graph import human_review
+    from agent.state import State
 
     mini_builder = StateGraph(State)
     mini_builder.add_node("human_review", human_review)
@@ -101,11 +101,12 @@ async def test_hitl_no_interrupt_without_tool_calls():
 async def test_hitl_approve_resumes_to_tools():
     """After approving, the graph should proceed to tool execution."""
     from langgraph.checkpoint.memory import InMemorySaver
-    from langgraph.graph import StateGraph, START, END
+    from langgraph.graph import END, START, StateGraph
+    from langgraph.prebuilt import ToolNode
+
     from agent.graph import human_review
     from agent.state import State
     from agent.tools import TOOLS
-    from langgraph.prebuilt import ToolNode
 
     mini_builder = StateGraph(State)
     mini_builder.add_node("human_review", human_review)
@@ -126,7 +127,11 @@ async def test_hitl_approve_resumes_to_tools():
                 AIMessage(
                     content="Let me check.",
                     tool_calls=[
-                        {"id": "call_1", "name": "get_weather", "args": {"city": "Seoul"}}
+                        {
+                            "id": "call_1",
+                            "name": "get_weather",
+                            "args": {"city": "Seoul"},
+                        }
                     ],
                 ),
             ]
@@ -152,7 +157,8 @@ async def test_hitl_approve_resumes_to_tools():
 async def test_hitl_reject_returns_rejection_message():
     """After rejecting, the graph should add rejection messages and go to call_model."""
     from langgraph.checkpoint.memory import InMemorySaver
-    from langgraph.graph import StateGraph, START, END
+    from langgraph.graph import END, START, StateGraph
+
     from agent.graph import human_review
     from agent.state import State
 
@@ -175,7 +181,11 @@ async def test_hitl_reject_returns_rejection_message():
                 AIMessage(
                     content="Let me check.",
                     tool_calls=[
-                        {"id": "call_2", "name": "get_weather", "args": {"city": "Seoul"}}
+                        {
+                            "id": "call_2",
+                            "name": "get_weather",
+                            "args": {"city": "Seoul"},
+                        }
                     ],
                 ),
             ]
@@ -192,7 +202,10 @@ async def test_hitl_reject_returns_rejection_message():
     messages = result.get("messages", [])
     tool_msgs = [m for m in messages if isinstance(m, ToolMessage)]
     assert len(tool_msgs) > 0
-    assert "rejected" in tool_msgs[0].content.lower() or "Not needed" in tool_msgs[0].content
+    assert (
+        "rejected" in tool_msgs[0].content.lower()
+        or "Not needed" in tool_msgs[0].content
+    )
 
 
 def test_graph_node_routing():
@@ -201,9 +214,7 @@ def test_graph_node_routing():
     from agent.state import State
 
     # No tool calls → END
-    state_no_tools = State(
-        messages=[AIMessage(content="Hello")]
-    )
+    state_no_tools = State(messages=[AIMessage(content="Hello")])
     assert route_model_output(state_no_tools) == "__end__"
 
     # With tool calls → human_review

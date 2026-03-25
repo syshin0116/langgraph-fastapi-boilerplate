@@ -19,8 +19,6 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg_pool import AsyncConnectionPool
 
 from agent.graph import builder as agent_builder
-from db import DB
-
 from api.logging_config import setup_logging
 from api.run_manager_base import (
     DEFAULT_BG_STREAM_MODES,
@@ -28,6 +26,7 @@ from api.run_manager_base import (
     normalize_stream_modes,
     resolve_input,
 )
+from db import DB
 
 load_dotenv()
 setup_logging()
@@ -115,7 +114,9 @@ async def execute_run(
         await db.set_thread_status(thread_id, "busy")
 
         # Metadata event
-        await publish({"event": "metadata", "data": json.dumps({"run_id": run_id, "attempt": 1})})
+        await publish(
+            {"event": "metadata", "data": json.dumps({"run_id": run_id, "attempt": 1})}
+        )
 
         if len(modes) == 1:
             async for chunk in graph.astream(

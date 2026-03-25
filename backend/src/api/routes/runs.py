@@ -6,11 +6,10 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sse_starlette.sse import EventSourceResponse
 
-from db import DB
-from schemas import RunCreate, RunResponse
-
 from api.deps import get_db, get_run_manager
 from api.run_manager_base import RunConflictError, RunManagerBase
+from db import DB
+from schemas import RunCreate, RunResponse
 
 router = APIRouter(tags=["runs"])
 
@@ -102,7 +101,7 @@ async def create_run(
             checkpoint_id=_resolve_checkpoint_id(body),
         )
     except RunConflictError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from e
     return _to_response(row)
 
 
@@ -133,7 +132,7 @@ async def stream_run(
             checkpoint_id=_resolve_checkpoint_id(body),
         )
     except RunConflictError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from e
 
     response = EventSourceResponse(event_gen)
     response.headers["Location"] = f"/threads/{thread_id}/runs/{run_id}/stream"
@@ -166,7 +165,7 @@ async def wait_run(
             checkpoint_id=_resolve_checkpoint_id(body),
         )
     except RunConflictError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from e
     return result
 
 
@@ -174,8 +173,8 @@ async def wait_run(
 async def list_runs(
     thread_id: str,
     db: Annotated[DB, Depends(get_db)],
-    limit: int = Query(10, ge=1, le=100),
-    offset: int = Query(0, ge=0),
+    limit: Annotated[int, Query(ge=1, le=100)] = 10,
+    offset: Annotated[int, Query(ge=0)] = 0,
     status: str | None = None,
 ):
     rows = await db.list_runs(thread_id, limit=limit, offset=offset, status=status)

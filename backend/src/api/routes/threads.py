@@ -3,7 +3,10 @@
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from langgraph.graph.state import CompiledStateGraph
+
 from agent.utils import get_message_text
+from api.deps import get_db, resolve_graph
 from db import DB
 from schemas import (
     ThreadCreate,
@@ -12,10 +15,6 @@ from schemas import (
     ThreadStateUpdate,
     ThreadUpdate,
 )
-
-from langgraph.graph.state import CompiledStateGraph
-
-from api.deps import get_db, resolve_graph
 
 router = APIRouter(prefix="/threads", tags=["threads"])
 
@@ -105,7 +104,13 @@ async def get_thread_state(
     snapshot = await graph.aget_state(config)
 
     if not snapshot or not snapshot.config:
-        return {"thread_id": thread_id, "values": {}, "next": [], "tasks": [], "checkpoint": None}
+        return {
+            "thread_id": thread_id,
+            "values": {},
+            "next": [],
+            "tasks": [],
+            "checkpoint": None,
+        }
 
     # Build tasks with interrupt data (matches LangGraph Platform format)
     tasks = []
@@ -143,9 +148,15 @@ async def get_thread_state(
         },
         "parent_checkpoint": {
             "thread_id": thread_id,
-            "checkpoint_ns": snapshot.parent_config["configurable"].get("checkpoint_ns", ""),
-            "checkpoint_id": snapshot.parent_config["configurable"].get("checkpoint_id"),
-        } if snapshot.parent_config else None,
+            "checkpoint_ns": snapshot.parent_config["configurable"].get(
+                "checkpoint_ns", ""
+            ),
+            "checkpoint_id": snapshot.parent_config["configurable"].get(
+                "checkpoint_id"
+            ),
+        }
+        if snapshot.parent_config
+        else None,
         "created_at": snapshot.created_at,
         "metadata": snapshot.metadata or {},
     }
@@ -192,7 +203,11 @@ async def get_thread_history(
 
         tasks = []
         for task in snapshot.tasks:
-            task_dict: dict[str, Any] = {"id": task.id, "name": task.name, "interrupts": []}
+            task_dict: dict[str, Any] = {
+                "id": task.id,
+                "name": task.name,
+                "interrupts": [],
+            }
             if task.interrupts:
                 task_dict["interrupts"] = [
                     {
@@ -217,9 +232,15 @@ async def get_thread_history(
                 },
                 "parent_checkpoint": {
                     "thread_id": thread_id,
-                    "checkpoint_ns": snapshot.parent_config["configurable"].get("checkpoint_ns", ""),
-                    "checkpoint_id": snapshot.parent_config["configurable"].get("checkpoint_id"),
-                } if snapshot.parent_config else None,
+                    "checkpoint_ns": snapshot.parent_config["configurable"].get(
+                        "checkpoint_ns", ""
+                    ),
+                    "checkpoint_id": snapshot.parent_config["configurable"].get(
+                        "checkpoint_id"
+                    ),
+                }
+                if snapshot.parent_config
+                else None,
                 "created_at": snapshot.created_at,
                 "metadata": snapshot.metadata or {},
             }

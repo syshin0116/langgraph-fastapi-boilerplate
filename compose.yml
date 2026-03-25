@@ -35,6 +35,9 @@ services:
       - backend
 
   # ── Redis + ARQ worker (activate with: docker compose --profile redis up) ──
+  # To enable Redis mode, uncomment REDIS_URL in .env and run:
+  #   docker compose --profile redis up --build
+  # The backend reads REDIS_URL from .env to decide whether to use ARQ.
 
   redis:
     image: redis:7-alpine
@@ -46,21 +49,6 @@ services:
       interval: 5s
       timeout: 1s
       retries: 5
-
-  backend-redis:
-    build: .
-    profiles: ["redis"]
-    ports:
-      - "${BACKEND_PORT:-8000}:8000"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    env_file: .env
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-postgres}
-      REDIS_URL: redis://redis:6379
 
   worker:
     build: .

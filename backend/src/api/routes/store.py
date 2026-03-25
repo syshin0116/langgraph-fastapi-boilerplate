@@ -4,6 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from api.deps import get_db
 from db import DB
 from schemas import (
     ItemResponse,
@@ -12,8 +13,6 @@ from schemas import (
     StoreItemSearch,
     StoreNamespaceList,
 )
-
-from api.deps import get_db
 
 router = APIRouter(prefix="/store", tags=["store"])
 
@@ -27,8 +26,8 @@ async def put_item(body: StoreItemPut, db: Annotated[DB, Depends(get_db)]):
 @router.get("/items", response_model=ItemResponse)
 async def get_item(
     db: Annotated[DB, Depends(get_db)],
-    namespace: str = Query(..., description="Dot-separated namespace"),
-    key: str = Query(...),
+    namespace: Annotated[str, Query(description="Dot-separated namespace")],
+    key: Annotated[str, Query()],
 ):
     ns = namespace.split(".")
     item = await db.store_get(ns, key)
@@ -70,9 +69,7 @@ async def search_items(body: StoreItemSearch, db: Annotated[DB, Depends(get_db)]
 
 
 @router.post("/namespaces")
-async def list_namespaces(
-    body: StoreNamespaceList, db: Annotated[DB, Depends(get_db)]
-):
+async def list_namespaces(body: StoreNamespaceList, db: Annotated[DB, Depends(get_db)]):
     namespaces = await db.store_list_namespaces(
         prefix=body.prefix,
         suffix=body.suffix,

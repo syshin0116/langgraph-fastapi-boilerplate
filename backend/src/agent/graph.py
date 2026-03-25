@@ -6,7 +6,7 @@ The agent pauses before tool execution for human approval via interrupt().
 
 import logging
 from datetime import UTC, datetime
-from typing import Dict, List, Literal, cast
+from typing import Literal, cast
 
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.graph import StateGraph
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 async def call_model(
     state: State, runtime: Runtime[Context]
-) -> Dict[str, List[AIMessage]]:
+) -> dict[str, list[AIMessage]]:
     """Call the LLM powering our agent."""
     model = load_chat_model(runtime.context.model)
     if TOOLS:
@@ -78,8 +78,7 @@ def human_review(state: State) -> Command[Literal["tools", "call_model"]]:
             for tc in tool_calls
         ],
         "reviewConfigs": [
-            {"allowedDecisions": ["approve", "reject", "edit"]}
-            for _ in tool_calls
+            {"allowedDecisions": ["approve", "reject", "edit"]} for _ in tool_calls
         ],
     }
 
