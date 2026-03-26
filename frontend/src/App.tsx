@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/prompt-input";
 import { Textarea } from "@/components/ui/textarea";
 import { PromptSuggestion } from "@/components/ui/prompt-suggestion";
+import { ModelSelector, type Model } from "@/components/ui/model-selector";
 import {
   PanelRightOpenIcon,
   PanelRightCloseIcon,
@@ -62,6 +63,8 @@ function App() {
   const [input, setInput] = useState("");
   const [showTimeTravel, setShowTimeTravel] = useState(false);
   const [savedRunId, setSavedRunId] = useState<string | null>(null);
+  const [models, setModels] = useState<Model[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>("");
   // "always approve" per tool name — persists for session
   const [autoApproveTools, setAutoApproveTools] = useState<Set<string>>(() => {
     try {
@@ -85,6 +88,20 @@ function App() {
   const getMetadata = thread.getMessagesMetadata;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const history = (thread.history ?? []) as any[];
+
+  // Fetch available models
+  useEffect(() => {
+    fetch(`${window.location.origin}/api/models`)
+      .then((r) => r.json())
+      .then((data: Model[]) => {
+        setModels(data);
+        if (!selectedModel) {
+          const def = data.find((m) => m.is_default);
+          setSelectedModel(def?.model_id ?? data[0]?.model_id ?? "");
+        }
+      })
+      .catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Persist autoApproveTools to sessionStorage
   useEffect(() => {
@@ -115,7 +132,11 @@ function App() {
     thread.submit(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       { messages: [{ type: "human", content: text }] } as any,
-      { onDisconnect: "continue", streamResumable: true },
+      {
+        onDisconnect: "continue",
+        streamResumable: true,
+        ...(selectedModel ? { config: { configurable: { model: selectedModel } } } : {}),
+      },
     );
   };
 
@@ -326,6 +347,16 @@ function App() {
 
           {/* Input */}
           <div className="relative bg-background px-4 pb-4 pt-2">
+            {models.length > 0 && (
+              <div className="mx-auto mb-1 max-w-3xl">
+                <ModelSelector
+                  models={models}
+                  selectedModelId={selectedModel}
+                  onModelChange={setSelectedModel}
+                  disabled={thread.isLoading}
+                />
+              </div>
+            )}
             <PromptInput
               value={input}
               onValueChange={setInput}

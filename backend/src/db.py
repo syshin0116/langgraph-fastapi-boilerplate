@@ -1,4 +1,4 @@
-"""Database operations for assistants, threads, runs, store, and crons."""
+"""Database operations for assistants, threads, runs, store, crons, and models."""
 
 from __future__ import annotations
 
@@ -67,10 +67,35 @@ _SETUP_STATEMENTS = [
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         PRIMARY KEY (namespace, key)
     )""",
+    """CREATE TABLE IF NOT EXISTS models (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        provider TEXT NOT NULL,
+        model_id TEXT NOT NULL UNIQUE,
+        display_name TEXT NOT NULL,
+        is_default BOOLEAN NOT NULL DEFAULT FALSE,
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )""",
     "CREATE INDEX IF NOT EXISTS idx_runs_thread_id ON runs(thread_id)",
     "CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status)",
     "CREATE INDEX IF NOT EXISTS idx_crons_enabled ON crons(enabled)",
     "CREATE INDEX IF NOT EXISTS idx_store_namespace ON store_items(namespace)",
+    "CREATE INDEX IF NOT EXISTS idx_models_provider ON models(provider)",
+    "CREATE INDEX IF NOT EXISTS idx_models_enabled ON models(enabled)",
+]
+
+_SEED_MODELS = [
+    ("openai", "openai/gpt-5.4", "GPT-5.4", True),
+    ("openai", "openai/gpt-4.1", "GPT-4.1", False),
+    ("openai", "openai/gpt-4.1-mini", "GPT-4.1 Mini", False),
+    ("openai", "openai/o3", "o3", False),
+    ("openai", "openai/o3-mini", "o3 Mini", False),
+    ("anthropic", "anthropic/claude-sonnet-4-6", "Claude Sonnet 4.6", False),
+    ("anthropic", "anthropic/claude-opus-4-6", "Claude Opus 4.6", False),
+    ("anthropic", "anthropic/claude-haiku-4-5", "Claude Haiku 4.5", False),
+    ("google_genai", "google_genai/gemini-2.5-pro", "Gemini 2.5 Pro", False),
+    ("google_genai", "google_genai/gemini-2.5-flash", "Gemini 2.5 Flash", False),
 ]
 
 
@@ -122,6 +147,14 @@ class DB:
         async with self.pool.connection() as conn:
             for stmt in _SETUP_STATEMENTS:
                 await conn.execute(stmt)
+            # Seed default models
+            for provider, model_id, display_name, is_default in _SEED_MODELS:
+                await conn.execute(
+                    """INSERT INTO models (provider, model_id, display_name, is_default)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (model_id) DO NOTHING""",
+                    (provider, model_id, display_name, is_default),
+                )
 
     # ---- Assistants ----
 
@@ -679,3 +712,68 @@ class DB:
                 )
             ).fetchall()
             return [dict(r) for r in rows]
+
+    # ---- Models ----
+
+    async def list_models(self, *, enabled_only: bool = True) -> list[dict[str, Any]]:
+        where = "enabled = TRUE" if enabled_only else "TRUE"
+        async with self._conn() as conn:
+            rows = await (
+                await conn.execute(
+                    f"SELECT * FROM models WHERE {where} ORDER BY provider, display_name",
+                )
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    async def get_model(self, model_id: str) -> dict[str, Any] | None:
+        async with self._conn() as conn:
+            row = await (
+                await conn.execute("SELECT * FROM models WHERE id = %s", (model_id,))
+            ).fetchone()
+            return dict(row) if row else None
+
+    async def create_model(
+        self,
+        *,
+        provider: str,
+        model_id: str,
+        display_name: str,
+        is_default: bool = False,
+        enabled: bool = True,
+    ) -> dict[str, Any]:
+        now = _now()
+        async with self._conn() as conn:
+            row = await (
+                await conn.execute(
+                    """INSERT INTO models (provider, model_id, display_name, is_default, enabled, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    RETURNING *""",
+                    (provider, model_id, display_name, is_default, enabled, now, now),
+                )
+            ).fetchone()
+            return dict(row)
+
+    async def update_model(self, id: str, **kwargs: Any) -> dict[str, Any] | None:
+        sets = []
+        vals = []
+        for k, v in kwargs.items():
+            if v is not None:
+                sets.append(f"{k} = %s")
+                vals.append(v)
+        if not sets:
+            return await self.get_model(id)
+        sets.append("updated_at = %s")
+        vals.append(_now())
+        vals.append(id)
+        async with self._conn() as conn:
+            row = await (
+                await conn.execute(
+                    f"UPDATE models SET {', '.join(sets)} WHERE id = %s RETURNING *",
+                    vals,
+                )
+            ).fetchone()
+            return dict(row) if row else None
+
+    async def delete_model(self, id: str) -> None:
+        async with self._conn() as conn:
+            await conn.execute("DELETE FROM models WHERE id = %s", (id,))

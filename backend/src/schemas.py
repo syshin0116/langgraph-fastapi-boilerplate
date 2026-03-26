@@ -229,3 +229,33 @@ class CronSearch(BaseModel):
     enabled: bool | None = None
     limit: int = 10
     offset: int = 0
+
+
+# ============================================================
+# Models
+# ============================================================
+class ModelCreate(BaseModel):
+    provider: str
+    model_id: str
+    display_name: str
+    is_default: bool = False
+    enabled: bool = True
+
+
+class ModelUpdate(BaseModel):
+    provider: str | None = None
+    model_id: str | None = None
+    display_name: str | None = None
+    is_default: bool | None = None
+    enabled: bool | None = None
+
+
+class ModelResponse(BaseModel):
+    id: str
+    provider: str
+    model_id: str
+    display_name: str
+    is_default: bool
+    enabled: bool
+    created_at: datetime
+    updated_at: datetime

@@ -15,6 +15,7 @@ from api.logging_config import setup_logging
 from api.middleware import RequestLoggingMiddleware
 from api.routes.assistants import router as assistants_router
 from api.routes.crons import router as crons_router
+from api.routes.models import router as models_router
 from api.routes.runs import router as runs_router
 from api.routes.store import router as store_router
 from api.routes.threads import router as threads_router
@@ -110,3 +111,4 @@ app.include_router(threads_router)
 app.include_router(runs_router)
 app.include_router(store_router)
 app.include_router(crons_router)
+app.include_router(models_router)

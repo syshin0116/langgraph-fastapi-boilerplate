@@ -26,10 +26,11 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-postgres}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/ok"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ok')"]
       interval: 5s
-      timeout: 2s
+      timeout: 3s
       retries: 5
+      start_period: 10s
 
   frontend:
     build:
