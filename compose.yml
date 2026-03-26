@@ -25,6 +25,11 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-postgres}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/ok"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
 
   frontend:
     build:
@@ -32,7 +37,8 @@ services:
     ports:
       - "${FRONTEND_PORT:-3003}:3000"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
   # ── Redis + ARQ worker (activate with: docker compose --profile redis up) ──
   # To enable Redis mode, uncomment REDIS_URL in .env and run:
