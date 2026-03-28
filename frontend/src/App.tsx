@@ -273,41 +273,52 @@ function App() {
                 </div>
               )}
 
-              {/* Messages */}
-              {thread.messages.map((msg) => {
-                const meta = getMetadata
-                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                  ? (getMetadata(msg) as any)
-                  : null;
-                const isLast =
-                  msg === thread.messages[thread.messages.length - 1];
+              {/* Messages — grouped into turns (AI turn = tool calls + text in one bubble) */}
+              {(() => {
+                const turns = groupMessagesIntoTurns(thread.messages);
+                // Filter out empty AI turns, BUT keep the last AI turn during
+                // streaming so the bubble stays mounted (no layout jump).
+                const filtered = turns.filter((t, i) => {
+                  if (!isTurnEmpty(t)) return true;
+                  // Keep last empty AI turn while streaming — it will show a loader inside
+                  if (thread.isLoading && t.type === "ai" && i === turns.length - 1) return true;
+                  return false;
+                });
+                return filtered.map((turn, idx) => {
+                  const isLast = idx === filtered.length - 1;
+                  const firstMsg = turn.messages[0];
+                  const lastMsg = turn.messages[turn.messages.length - 1];
+                  const meta = getMetadata
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    ? (getMetadata(lastMsg) as any)
+                    : null;
 
-                return (
-                  <ChatMessageItem
-                    key={msg.id}
-                    message={msg}
-                    allMessages={thread.messages}
-                    isStreaming={thread.isLoading && isLast}
-                    metadata={meta}
-                    onEdit={handleEdit}
-                    onRegenerate={handleRegenerate}
-                    onBranchSwitch={(id) => thread.setBranch(id)}
-                  />
-                );
-              })}
+                  if (turn.type === "human") {
+                    return (
+                      <HumanMessageItem
+                        key={firstMsg.id}
+                        message={firstMsg}
+                        isStreaming={thread.isLoading && isLast}
+                        metadata={meta}
+                        onEdit={handleEdit}
+                        onBranchSwitch={(id) => thread.setBranch(id)}
+                      />
+                    );
+                  }
 
-              {/* Loading */}
-              {thread.isLoading &&
-                thread.messages.length > 0 &&
-                thread.messages[thread.messages.length - 1].type ===
-                  "human" && (
-                  <div className="flex items-center gap-3 pl-1">
-                    <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary to-primary/70">
-                      <SparklesIcon className="size-4 text-primary-foreground animate-pulse" />
-                    </div>
-                    <Loader variant="typing" size="sm" />
-                  </div>
-                )}
+                  return (
+                    <AITurnItem
+                      key={firstMsg.id}
+                      turn={turn}
+                      allMessages={thread.messages}
+                      isStreaming={thread.isLoading && isLast}
+                      metadata={meta}
+                      onRegenerate={handleRegenerate}
+                      onBranchSwitch={(id) => thread.setBranch(id)}
+                    />
+                  );
+                });
+              })()}
 
               {/* HITL interrupt card */}
               {interrupt && (
@@ -455,87 +466,86 @@ function ToolCallsRenderer({
   return <ToolGroup tools={toolParts} />;
 }
 
-// ── Chat Message ────────────────────────────────────────────
+// ── Message Grouping ────────────────────────────────────────
+// Group messages into "turns": human turns (single msg) and AI turns
+// (consecutive AI + tool messages). This renders tool calls and the
+// follow-up text response in the same bubble.
 
-function ChatMessageItem({
+type MessageTurn = { type: "human"; messages: LGMessage[] } | { type: "ai"; messages: LGMessage[] };
+
+function groupMessagesIntoTurns(messages: LGMessage[]): MessageTurn[] {
+  const turns: MessageTurn[] = [];
+  for (const msg of messages) {
+    if (msg.type === "human") {
+      turns.push({ type: "human", messages: [msg] });
+    } else if (msg.type === "ai" || msg.type === "tool") {
+      const last = turns[turns.length - 1];
+      if (last?.type === "ai") {
+        last.messages.push(msg);
+      } else {
+        turns.push({ type: "ai", messages: [msg] });
+      }
+    }
+  }
+  return turns;
+}
+
+function extractTextFromMessage(msg: LGMessage): string {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (msg as any).text ?? (
+    typeof msg.content === "string"
+      ? msg.content
+      : Array.isArray(msg.content)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ? msg.content.filter((b: any) => b.type === "text").map((b: any) => b.text ?? "").join("")
+        : ""
+  );
+}
+
+function isTurnEmpty(turn: MessageTurn): boolean {
+  if (turn.type === "human") return false;
+  return turn.messages.every((msg) => {
+    if (msg.type === "tool") return true; // tool messages alone don't make a turn visible
+    if (msg.type !== "ai") return true;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const hasToolCalls = ((msg as any).tool_calls ?? []).length > 0;
+    if (hasToolCalls) return false;
+    const text = extractTextFromMessage(msg);
+    return !text.trim();
+  });
+}
+
+// ── Chat Message (Human) ────────────────────────────────────
+
+function HumanMessageItem({
   message,
-  allMessages,
   isStreaming,
   metadata,
   onEdit,
-  onRegenerate,
   onBranchSwitch,
 }: {
   message: LGMessage;
-  allMessages: LGMessage[];
   isStreaming?: boolean;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   metadata?: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   onEdit?: (text: string, metadata: any) => void;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  onRegenerate?: (metadata: any) => void;
   onBranchSwitch?: (branchId: string) => void;
 }) {
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState("");
   const [copied, setCopied] = useState(false);
-
-  const isHuman = message.type === "human";
-  const isAI = message.type === "ai";
-  const isTool = message.type === "tool";
-
-  const content =
-    typeof message.content === "string"
-      ? message.content
-      : JSON.stringify(message.content);
-
-  // Extended thinking / reasoning blocks
-  const contentBlocks = message.contentBlocks as
-    | Array<{ type: string; reasoning?: string; text?: string }>
-    | undefined;
-
-  const reasoningText =
-    contentBlocks
-      ?.filter((b: { type: string; reasoning?: string }) => b.type === "reasoning" && b.reasoning?.trim())
-      .map((b: { reasoning?: string }) => b.reasoning)
-      .join("") ?? "";
-
-  const textContent = contentBlocks
-    ? contentBlocks
-        .filter((b: { type: string }) => b.type === "text")
-        .map((b: { text?: string }) => b.text)
-        .join("")
-    : content;
-
-  // Tool result messages are merged into the AI tool call card — skip rendering
-  if (isTool) return null;
-
-  // AI tool_calls
-  const toolCalls = isAI ? (message.tool_calls ?? []) : [];
+  // Only animate on first mount — never re-trigger after streaming ends
+  const wasStreamingRef = useRef(false);
+  if (isStreaming) wasStreamingRef.current = true;
+  const skipAnimation = wasStreamingRef.current;
+  const textContent = extractTextFromMessage(message);
 
   return (
-    <div className={`group animate-in fade-in-0 duration-300 ${isHuman ? "flex justify-end" : ""}`}>
-      <div className={isHuman ? "max-w-[80%]" : "w-full"}>
-        <Message className={isHuman ? "flex-row-reverse" : ""}>
-          {!isHuman && (
-            <div className="mt-1 flex size-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary to-primary/70">
-              <SparklesIcon className="size-4 text-primary-foreground" />
-            </div>
-          )}
-
+    <div className={`group ${skipAnimation ? "" : "animate-in fade-in-0 duration-300"} flex justify-end`}>
+      <div className="max-w-[80%]">
+        <Message className="flex-row-reverse">
           <div className="flex-1 space-y-1">
-            {/* Reasoning */}
-            {reasoningText && (
-              <Reasoning isStreaming={isStreaming}>
-                <ReasoningTrigger>
-                  {isStreaming ? "Thinking..." : "View reasoning"}
-                </ReasoningTrigger>
-                <ReasoningContent markdown>{reasoningText}</ReasoningContent>
-              </Reasoning>
-            )}
-
-            {/* Content */}
             {isEditing ? (
               <div className="space-y-2 rounded-xl border bg-card p-3">
                 <textarea
@@ -565,27 +575,14 @@ function ChatMessageItem({
               </div>
             ) : textContent ? (
               <MessageContent
-                markdown={isAI}
-                id={isAI ? message.id : undefined}
-                className={
-                  isHuman
-                    ? "rounded-2xl bg-primary px-4 py-2.5 text-primary-foreground shadow-sm whitespace-pre-wrap"
-                    : "rounded-2xl bg-secondary/60 px-4 py-3"
-                }
+                className="rounded-2xl bg-primary px-4 py-2.5 text-primary-foreground shadow-sm whitespace-pre-wrap"
               >
                 {textContent}
               </MessageContent>
             ) : null}
 
-            {/* Tool calls (merged with tool result output) */}
-            {toolCalls.length > 0 && (
-              <ToolCallsRenderer toolCalls={toolCalls} allMessages={allMessages} isStreaming={isStreaming} />
-            )}
-
-            {/* Action bar — always visible below message content */}
-            {!isStreaming && !isEditing && (
-              <div className={`flex items-center gap-0.5 ${isHuman ? "justify-end" : ""} opacity-0 transition-opacity duration-150 group-hover:opacity-100`}>
-                {/* Copy */}
+            {!isEditing && (
+              <div className="flex h-7 items-center gap-0.5 justify-end opacity-0 transition-opacity duration-150 group-hover:opacity-100">
                 {textContent && (
                   <Button
                     variant="ghost"
@@ -604,8 +601,149 @@ function ChatMessageItem({
                     )}
                   </Button>
                 )}
-                {/* Regenerate (AI messages) */}
-                {isAI && metadata?.firstSeenState?.parent_checkpoint && onRegenerate && (
+                {metadata?.firstSeenState?.parent_checkpoint && onEdit && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="size-7 text-muted-foreground hover:text-foreground"
+                    onClick={() => {
+                      setEditText(textContent);
+                      setIsEditing(true);
+                    }}
+                  >
+                    <PencilIcon className="size-3.5" />
+                  </Button>
+                )}
+                {metadata?.branchOptions != null && metadata.branchOptions.length > 1 && onBranchSwitch && (
+                  <BranchSwitcher metadata={metadata} onSwitch={onBranchSwitch} />
+                )}
+              </div>
+            )}
+          </div>
+        </Message>
+      </div>
+    </div>
+  );
+}
+
+// ── Chat Message (AI Turn) ──────────────────────────────────
+// Renders an entire AI turn: possibly multiple AI messages and tool results
+// in a single bubble.
+
+function AITurnItem({
+  turn,
+  allMessages,
+  isStreaming,
+  metadata,
+  onRegenerate,
+  onBranchSwitch,
+}: {
+  turn: MessageTurn;
+  allMessages: LGMessage[];
+  isStreaming?: boolean;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  metadata?: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  onRegenerate?: (metadata: any) => void;
+  onBranchSwitch?: (branchId: string) => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  // Only animate on first mount — never re-trigger after streaming ends
+  const wasStreamingRef = useRef(false);
+  if (isStreaming) wasStreamingRef.current = true;
+  const skipAnimation = wasStreamingRef.current;
+
+  // Collect all tool calls, text, and reasoning from AI messages in this turn
+  const allToolCalls: Array<{ id: string; name: string; args: Record<string, unknown> }> = [];
+  const textParts: string[] = [];
+  let reasoningText = "";
+  let lastAiId: string | undefined;
+
+  for (const msg of turn.messages) {
+    if (msg.type === "ai") {
+      lastAiId = msg.id;
+      const tc = (msg as any).tool_calls ?? []; // eslint-disable-line @typescript-eslint/no-explicit-any
+      allToolCalls.push(...tc);
+
+      const text = extractTextFromMessage(msg);
+      if (text.trim()) textParts.push(text);
+
+      const contentBlocks = (
+        msg.contentBlocks ??
+        (Array.isArray(msg.content) ? msg.content : undefined)
+      ) as Array<{ type: string; reasoning?: string }> | undefined;
+      const r = contentBlocks
+        ?.filter((b) => b.type === "reasoning" && b.reasoning?.trim())
+        .map((b) => b.reasoning)
+        .join("") ?? "";
+      if (r) reasoningText += r;
+    }
+    // tool messages are consumed by ToolCallsRenderer via allMessages
+  }
+
+  const combinedText = textParts.join("");
+
+  return (
+    <div className={`group ${skipAnimation ? "" : "animate-in fade-in-0 duration-300"}`}>
+      <div className="w-full">
+        <Message>
+          <div className="mt-1 flex size-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary to-primary/70">
+            <SparklesIcon className="size-4 text-primary-foreground" />
+          </div>
+
+          <div className="flex-1 space-y-1">
+            {/* Reasoning */}
+            {reasoningText && (
+              <Reasoning isStreaming={isStreaming}>
+                <ReasoningTrigger>
+                  {isStreaming ? "Thinking..." : "View reasoning"}
+                </ReasoningTrigger>
+                <ReasoningContent markdown>{reasoningText}</ReasoningContent>
+              </Reasoning>
+            )}
+
+            {/* Tool calls (all tool calls from this turn, merged with results) */}
+            {allToolCalls.length > 0 && (
+              <ToolCallsRenderer toolCalls={allToolCalls} allMessages={allMessages} isStreaming={isStreaming && !combinedText} />
+            )}
+
+            {/* Text content (combined from all AI messages in this turn) */}
+            {combinedText ? (
+              <MessageContent
+                markdown
+                id={lastAiId}
+                className="rounded-2xl bg-secondary/60 px-4 py-3"
+              >
+                {combinedText}
+              </MessageContent>
+            ) : null}
+
+            {/* Inline loader — shown when AI turn has no content yet */}
+            {isStreaming && !combinedText && allToolCalls.length === 0 && !reasoningText && (
+              <Loader variant="typing" size="sm" />
+            )}
+
+            {/* Action bar — fixed h-7 so layout doesn't shift when buttons appear */}
+            <div className="flex h-7 items-center gap-0.5 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+                {combinedText && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="size-7 text-muted-foreground hover:text-foreground"
+                    onClick={() => {
+                      navigator.clipboard.writeText(combinedText);
+                      setCopied(true);
+                      setTimeout(() => setCopied(false), 2000);
+                    }}
+                  >
+                    {copied ? (
+                      <CheckIcon className="size-3.5 text-green-500" />
+                    ) : (
+                      <CopyIcon className="size-3.5" />
+                    )}
+                  </Button>
+                )}
+                {metadata?.firstSeenState?.parent_checkpoint && onRegenerate && (
                   <Button
                     variant="ghost"
                     size="sm"
@@ -615,26 +753,10 @@ function ChatMessageItem({
                     <RefreshCwIcon className="size-3.5" />
                   </Button>
                 )}
-                {/* Edit (human messages) */}
-                {isHuman && metadata?.firstSeenState?.parent_checkpoint && onEdit && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="size-7 text-muted-foreground hover:text-foreground"
-                    onClick={() => {
-                      setEditText(content);
-                      setIsEditing(true);
-                    }}
-                  >
-                    <PencilIcon className="size-3.5" />
-                  </Button>
-                )}
-                {/* Branch switcher */}
                 {metadata?.branchOptions != null && metadata.branchOptions.length > 1 && onBranchSwitch && (
                   <BranchSwitcher metadata={metadata} onSwitch={onBranchSwitch} />
                 )}
               </div>
-            )}
           </div>
         </Message>
       </div>

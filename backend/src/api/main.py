@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg_pool import AsyncConnectionPool
 
-from agent.graph import builder as agent_builder
+from agent.graph import create_graph
 from api.logging_config import setup_logging
 from api.middleware import RequestLoggingMiddleware
 from api.routes.assistants import router as assistants_router
@@ -27,11 +27,6 @@ load_dotenv()
 setup_logging()
 
 logger = logging.getLogger(__name__)
-
-# Graph registry: graph_id → StateGraph builder
-_graphs_registry = {
-    "agent": agent_builder,
-}
 
 
 @asynccontextmanager
@@ -53,8 +48,7 @@ async def lifespan(app: FastAPI):
         await db.setup()
 
         compiled_graphs = {
-            gid: builder.compile(name="ReAct Agent", checkpointer=checkpointer)
-            for gid, builder in _graphs_registry.items()
+            "agent": create_graph(checkpointer=checkpointer),
         }
 
         redis_url = os.environ.get("REDIS_URL")
@@ -75,7 +69,7 @@ async def lifespan(app: FastAPI):
         app.state.graphs = compiled_graphs
         app.state.run_manager = run_manager
 
-        logger.info("Application started — graphs: %s", list(compiled_graphs.keys()))
+        logger.info("Application started — graphs: %s", list(compiled_graphs))
         yield
 
         if redis_url and hasattr(run_manager, "close"):
@@ -103,7 +97,7 @@ async def ok():
 
 @app.get("/info")
 async def info():
-    return {"version": "0.1.0", "graphs": list(_graphs_registry.keys())}
+    return {"version": "0.1.0", "graphs": ["agent"]}
 
 
 app.include_router(assistants_router)

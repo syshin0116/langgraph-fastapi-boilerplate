@@ -1,5 +1,5 @@
 """LangGraph agent — graph, tools, state."""
 
-from agent.graph import builder, graph
+from agent.graph import create_graph, graph
 
-__all__ = ["builder", "graph"]
+__all__ = ["create_graph", "graph"]

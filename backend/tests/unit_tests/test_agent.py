@@ -1,40 +1,27 @@
 """Unit tests for the agent module."""
 
-from agent.context import Context
-from agent.graph import builder, graph
+from agent.graph import create_graph, graph
 from agent.tools import TOOLS, get_weather, search_web
-from agent.utils import load_chat_model
 
 
 def test_graph_compiles():
-    assert graph.name == "ReAct Agent"
+    """The default graph (no checkpointer) should compile."""
+    assert graph is not None
 
 
-def test_builder_exists():
-    assert builder is not None
+def test_create_graph_factory():
+    """create_graph should return a compiled graph."""
+    g = create_graph()
+    assert g is not None
 
 
-def test_graph_has_human_review_node():
-    """HITL: human_review node should exist in the graph."""
-    node_names = list(builder.nodes.keys())
-    assert "human_review" in node_names
+def test_graph_has_model_node():
+    """Deep agent should have a 'model' node."""
+    assert "model" in graph.nodes
 
 
 def test_graph_has_tools_node():
-    node_names = list(builder.nodes.keys())
-    assert "tools" in node_names
-
-
-def test_graph_has_call_model_node():
-    node_names = list(builder.nodes.keys())
-    assert "call_model" in node_names
-
-
-def test_context_defaults():
-    ctx = Context()
-    # Model should be a "provider/model" format string
-    assert "/" in ctx.model
-    assert "{system_time}" in ctx.system_prompt
+    assert "tools" in graph.nodes
 
 
 def test_tools_not_empty():
@@ -52,11 +39,3 @@ def test_search_web_tool():
     result = search_web.invoke({"query": "test query"})
     assert "test query" in result
     assert isinstance(result, str)
-
-
-def test_load_chat_model_format():
-    try:
-        model = load_chat_model("anthropic/claude-sonnet-4-5-20250929")
-        assert model is not None
-    except Exception:
-        pass

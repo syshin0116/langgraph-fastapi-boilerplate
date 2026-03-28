@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg_pool import AsyncConnectionPool
 
-from agent.graph import builder as agent_builder
+from agent.graph import create_graph
 from api.logging_config import setup_logging
 from api.run_manager_base import (
     DEFAULT_BG_STREAM_MODES,
@@ -32,11 +32,6 @@ load_dotenv()
 setup_logging()
 
 logger = logging.getLogger(__name__)
-
-# Graph registry (must match main.py)
-_graphs_registry = {
-    "agent": agent_builder,
-}
 
 # Redis key templates
 _EVT_CHANNEL = "run:{run_id}:events"
@@ -178,8 +173,7 @@ async def startup(ctx: dict) -> None:
     await db.setup()
 
     compiled_graphs = {
-        gid: builder.compile(name="ReAct Agent", checkpointer=checkpointer)
-        for gid, builder in _graphs_registry.items()
+        "agent": create_graph(checkpointer=checkpointer),
     }
 
     redis = aioredis.from_url(redis_url, decode_responses=True)

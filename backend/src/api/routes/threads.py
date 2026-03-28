@@ -3,9 +3,9 @@
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from langchain_core.messages import BaseMessage
 from langgraph.graph.state import CompiledStateGraph
 
-from agent.utils import get_message_text
 from api.deps import get_db, resolve_graph
 from db import DB
 from schemas import (
@@ -276,6 +276,16 @@ def _serialize_state_values(values: dict) -> dict:
     return result
 
 
+def _get_message_text(msg: BaseMessage) -> str:
+    content = msg.content
+    if isinstance(content, str):
+        return content
+    if isinstance(content, dict):
+        return content.get("text", "")
+    txts = [c if isinstance(c, str) else (c.get("text") or "") for c in content]
+    return "".join(txts).strip()
+
+
 def _serialize_message(msg: Any) -> dict:
     if hasattr(msg, "model_dump"):
         return msg.model_dump()
@@ -283,5 +293,5 @@ def _serialize_message(msg: Any) -> dict:
         return msg.dict()
     return {
         "type": getattr(msg, "type", "unknown"),
-        "content": get_message_text(msg) if hasattr(msg, "content") else str(msg),
+        "content": _get_message_text(msg) if hasattr(msg, "content") else str(msg),
     }
