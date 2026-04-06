@@ -132,8 +132,12 @@ def format_stream_event(mode: str, chunk: Any) -> dict[str, str]:
     """Format a graph stream chunk as an SSE event dict.
 
     The @langchain/langgraph-sdk StreamManager expects:
-    - event name = stream mode name (e.g. "values", "messages")
+    - event name = LangGraph mode name (e.g. "values", "messages")
     - messages data = [message_chunk, metadata] (array, not dict)
+
+    Note: SDK sends 'messages-tuple' in the request, which we normalize
+    to 'messages' for LangGraph. The SSE event name must also be 'messages'
+    because StreamManager.matchEventType checks for 'messages', not 'messages-tuple'.
     """
     if mode == "messages" and isinstance(chunk, tuple) and len(chunk) == 2:
         msg, meta = chunk

@@ -156,7 +156,7 @@ function App() {
       { messages: [newMessage] } as any,
       {
         checkpoint,
-        streamMode: ["values"],
+        streamMode: ["values", "messages-tuple"],
         streamSubgraphs: true,
         streamResumable: true,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -178,7 +178,7 @@ function App() {
     if (!checkpoint) return;
     thread.submit(undefined, {
       checkpoint,
-      streamMode: ["values"],
+      streamMode: ["values", "messages-tuple"],
       streamSubgraphs: true,
       streamResumable: true,
     });
@@ -420,7 +420,7 @@ function App() {
             history={history}
             onResumeFrom={(checkpoint) => thread.submit(undefined, {
               checkpoint,
-              streamMode: ["values"],
+              streamMode: ["values", "messages-tuple"],
               streamSubgraphs: true,
               streamResumable: true,
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
