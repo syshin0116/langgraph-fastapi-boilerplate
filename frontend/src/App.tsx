@@ -47,6 +47,8 @@ import {
   CloudIcon,
   SearchIcon,
   SmileIcon,
+  AlertCircleIcon,
+  ListIcon,
 } from "lucide-react";
 import type { GraphState } from "./types";
 
@@ -340,21 +342,30 @@ function App() {
             <ScrollButton className="absolute bottom-4 right-4 z-10 shadow-md" />
           </ChatContainerRoot>
 
-          {/* Error */}
-          {thread.error != null && (
-            <div className="border-t border-destructive/30 bg-destructive/5 px-4 py-2 text-sm text-destructive">
-              {String((thread.error as Error)?.message ?? thread.error)}
-            </div>
-          )}
-
-          {/* Queue display */}
-          {thread.queue && thread.queue.size > 0 && (
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            <QueueDisplay queue={thread.queue as any} />
-          )}
-
           {/* Gradient fade */}
           <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-6 bg-gradient-to-t from-background to-transparent" />
+
+          {/* Error & Queue — above input, same width as chat messages */}
+          {(thread.error != null || (thread.queue && thread.queue.size > 0)) && (
+            <div className="mx-auto max-w-3xl w-full space-y-2 pb-2">
+              {thread.error != null && (
+                <ErrorBanner
+                  error={thread.error}
+                  onRetry={() => {
+                    const last = thread.messages[thread.messages.length - 1];
+                    if (last?.type === "human") {
+                      submitMessage(extractTextFromMessage(last));
+                    }
+                  }}
+                  onDismiss={() => (thread as any).stopStream?.(false)}
+                />
+              )}
+              {thread.queue && thread.queue.size > 0 && (
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                <QueueDisplay queue={thread.queue as any} />
+              )}
+            </div>
+          )}
 
           {/* Input */}
           <div className="relative bg-background px-4 pb-4 pt-2">
@@ -712,7 +723,7 @@ function AITurnItem({
               <MessageContent
                 markdown
                 id={lastAiId}
-                className="rounded-2xl bg-secondary/60 px-4 py-3"
+                className={`rounded-2xl bg-secondary/60 px-4 py-3 ${isStreaming ? "border-b-2 border-primary/30 animate-pulse" : ""}`}
               >
                 {combinedText}
               </MessageContent>
@@ -720,7 +731,9 @@ function AITurnItem({
 
             {/* Inline loader — shown when AI turn has no content yet */}
             {isStreaming && !combinedText && allToolCalls.length === 0 && !reasoningText && (
-              <Loader variant="typing" size="sm" />
+              <div className="rounded-2xl bg-secondary/60 px-4 py-3">
+                <Loader variant="text-shimmer" size="sm" text="Thinking" />
+              </div>
             )}
 
             {/* Action bar — fixed h-7 so layout doesn't shift when buttons appear */}
@@ -987,29 +1000,109 @@ function ConnectionDot({ isConnected, savedRunId, onDisconnect, onRejoin }: {
   );
 }
 
+// ── Error Banner ────────────────────────────────────────────
+
+function ErrorBanner({
+  error,
+  onRetry,
+  onDismiss,
+}: {
+  error: unknown;
+  onRetry?: () => void;
+  onDismiss?: () => void;
+}) {
+  const message = String((error as Error)?.message ?? error);
+  return (
+    <div className="animate-in slide-in-from-bottom-2 duration-200 rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3">
+      <div className="flex items-start gap-3">
+        <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-destructive/10">
+          <AlertCircleIcon className="size-4 text-destructive" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-medium text-destructive">Something went wrong</p>
+          <p className="mt-0.5 text-xs text-destructive/80 truncate">{message}</p>
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {onRetry && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1 border-destructive/30 px-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
+              onClick={onRetry}
+            >
+              <RefreshCwIcon className="size-3" />
+              Retry
+            </Button>
+          )}
+          {onDismiss && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="size-7 text-destructive/60 hover:text-destructive"
+              onClick={onDismiss}
+            >
+              <XIcon className="size-3.5" />
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Queue Display ───────────────────────────────────────────
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function QueueDisplay({ queue }: { queue: any }) {
   return (
-    <div className="border-t bg-muted/30 px-4 py-2.5">
-      <div className="mx-auto max-w-3xl">
-        <div className="flex items-center justify-between text-xs text-muted-foreground">
-          <span>Queued ({queue.size})</span>
-          <Button variant="ghost" size="sm" className="h-auto px-1 py-0 text-xs text-destructive hover:text-destructive" onClick={() => queue.clear()}>Clear</Button>
+    <div className="animate-in slide-in-from-bottom-1 duration-200 rounded-xl border border-border/60 bg-muted/20 px-4 py-2.5">
+      <div>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="flex size-5 items-center justify-center rounded bg-primary/10">
+              <ListIcon className="size-3 text-primary" />
+            </div>
+            <span className="text-xs font-medium text-muted-foreground">
+              {queue.size} message{queue.size > 1 ? "s" : ""} queued
+            </span>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 gap-1 px-2 text-[11px] text-muted-foreground hover:text-destructive"
+            onClick={() => queue.clear()}
+          >
+            <XIcon className="size-3" />
+            Clear all
+          </Button>
         </div>
-        <div className="mt-1.5 space-y-1">
-          {queue.entries.slice(0, 3).map((entry: { id: string; values: Record<string, unknown> }) => {
+        <div className="mt-2 space-y-1">
+          {queue.entries.slice(0, 3).map((entry: { id: string; values: Record<string, unknown> }, i: number) => {
             const msgs = entry.values?.messages as Array<{ content: string }> | undefined;
             return (
-              <div key={entry.id} className="flex items-center justify-between text-xs">
-                <span className="truncate text-muted-foreground">{msgs?.[0]?.content ?? "..."}</span>
-                <Button variant="ghost" size="sm" className="ml-2 size-5 shrink-0 text-muted-foreground hover:text-destructive" onClick={() => queue.cancel(entry.id)}>
+              <div key={entry.id} className="flex items-center gap-2 rounded-lg bg-background/60 px-2.5 py-1.5">
+                <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-medium text-muted-foreground">
+                  {i + 1}
+                </span>
+                <span className="flex-1 truncate text-xs text-muted-foreground">
+                  {msgs?.[0]?.content ?? "..."}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="size-5 shrink-0 text-muted-foreground/50 hover:text-destructive"
+                  onClick={() => queue.cancel(entry.id)}
+                >
                   <XIcon className="size-3" />
                 </Button>
               </div>
             );
           })}
+          {queue.size > 3 && (
+            <p className="text-center text-[11px] text-muted-foreground/60">
+              +{queue.size - 3} more
+            </p>
+          )}
         </div>
       </div>
     </div>
