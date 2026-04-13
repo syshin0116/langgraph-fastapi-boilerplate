@@ -77,7 +77,7 @@ class RunManagerBase(ABC):
 
     @abstractmethod
     async def join_stream(
-        self, thread_id: str, run_id: str
+        self, thread_id: str, run_id: str, *, last_event_id: str | None = None
     ) -> AsyncIterator[dict[str, Any]]: ...
 
     @abstractmethod

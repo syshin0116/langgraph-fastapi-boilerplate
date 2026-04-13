@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+import uuid
 
 import redis.asyncio as aioredis
 from arq.connections import RedisSettings
@@ -36,8 +37,14 @@ logger = logging.getLogger(__name__)
 # Redis key templates
 _EVT_CHANNEL = "run:{run_id}:events"
 _EVT_BUFFER = "run:{run_id}:buffer"
+_EVT_COUNTER = "run:{run_id}:counter"
 _CTL_CHANNEL = "run:{run_id}:control"
-_BUFFER_TTL = 300
+_BUFFER_TTL = 600
+_MAX_BUFFER_EVENTS = 10000
+
+# Lease settings
+_HEARTBEAT_INTERVAL = 10  # seconds
+_LEASE_DURATION = 30  # seconds
 
 
 def _key(template: str, run_id: str) -> str:
@@ -61,11 +68,20 @@ async def execute_run(
     db: DB = ctx["db"]
     graphs = ctx["graphs"]
     redis: aioredis.Redis = ctx["redis"]
+    worker_id: str = ctx["worker_id"]
 
     graph = graphs.get(graph_id)
     if not graph:
         logger.error("Unknown graph_id: %s", graph_id)
         return
+
+    # Lease: atomically claim this run
+    claimed = await db.claim_run(run_id, worker_id, _LEASE_DURATION)
+    if not claimed:
+        logger.warning("Run %s not claimable (already taken or cancelled)", run_id)
+        return
+
+    retry_count = (claimed.get("execution_params") or {}).get("retry_count", 0)
 
     # Build LangGraph config
     configurable: dict = {"thread_id": thread_id}
@@ -84,12 +100,21 @@ async def execute_run(
 
     evt_channel = _key(_EVT_CHANNEL, run_id)
     buf_key = _key(_EVT_BUFFER, run_id)
+    counter_key = _key(_EVT_COUNTER, run_id)
     ctl_channel = _key(_CTL_CHANNEL, run_id)
 
     async def publish(event: dict | None) -> None:
+        """Publish event with atomic sequence ID and bounded buffer."""
+        if event is not None:
+            seq = await redis.incr(counter_key)
+            event["id"] = f"{run_id}_evt_{seq}"
         raw = json.dumps(event)
-        await redis.rpush(buf_key, raw)
-        await redis.publish(evt_channel, raw)
+        pipe = redis.pipeline()
+        pipe.rpush(buf_key, raw)
+        pipe.ltrim(buf_key, -_MAX_BUFFER_EVENTS, -1)
+        pipe.expire(buf_key, _BUFFER_TTL)
+        pipe.publish(evt_channel, raw)
+        await pipe.execute()
 
     # Listen for cancel signals
     cancelled = asyncio.Event()
@@ -104,13 +129,24 @@ async def execute_run(
 
     cancel_task = asyncio.create_task(_cancel_listener())
 
+    # Heartbeat: extend lease periodically
+    async def _heartbeat() -> None:
+        while True:
+            await asyncio.sleep(_HEARTBEAT_INTERVAL)
+            rows_updated = await db.extend_lease(run_id, worker_id, _LEASE_DURATION)
+            if rows_updated == 0:
+                logger.warning("Lease lost for run %s — self-cancelling", run_id)
+                cancelled.set()
+                break
+
+    heartbeat_task = asyncio.create_task(_heartbeat())
+
     try:
-        await db.update_run_status(run_id, "running")
         await db.set_thread_status(thread_id, "busy")
 
         # Metadata event
         await publish(
-            {"event": "metadata", "data": json.dumps({"run_id": run_id, "attempt": 1})}
+            {"event": "metadata", "data": json.dumps({"run_id": run_id, "attempt": retry_count + 1})}
         )
 
         if len(modes) == 1:
@@ -144,9 +180,15 @@ async def execute_run(
     finally:
         # Sentinel — end of stream
         await publish(None)
-        # Set TTL on buffer so Redis self-cleans
-        await redis.expire(buf_key, _BUFFER_TTL)
-        # Cleanup cancel listener
+        # Set TTL on buffer and counter so Redis self-cleans
+        pipe = redis.pipeline()
+        pipe.expire(buf_key, _BUFFER_TTL)
+        pipe.expire(counter_key, _BUFFER_TTL)
+        await pipe.execute()
+        # Clear lease
+        await db.clear_lease(run_id)
+        # Cleanup heartbeat and cancel listener
+        heartbeat_task.cancel()
         cancel_task.cancel()
         await pubsub.unsubscribe(ctl_channel)
         await pubsub.aclose()
@@ -178,13 +220,16 @@ async def startup(ctx: dict) -> None:
 
     redis = aioredis.from_url(redis_url, decode_responses=True)
 
+    worker_id = f"worker-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+
     ctx["pool"] = pool
     ctx["db"] = db
     ctx["checkpointer"] = checkpointer
     ctx["graphs"] = compiled_graphs
     ctx["redis"] = redis
+    ctx["worker_id"] = worker_id
 
-    logger.info("Worker started — graphs: %s", list(compiled_graphs.keys()))
+    logger.info("Worker %s started — graphs: %s", worker_id, list(compiled_graphs.keys()))
 
 
 async def shutdown(ctx: dict) -> None:

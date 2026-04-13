@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 _EVT_CHANNEL = "run:{run_id}:events"  # pub/sub channel for live events
 _EVT_BUFFER = "run:{run_id}:buffer"  # list for event replay
 _CTL_CHANNEL = "run:{run_id}:control"  # pub/sub channel for cancel signals
-_BUFFER_TTL = 300  # seconds to keep buffer after run completes
+_BUFFER_TTL = 600  # seconds to keep buffer after run completes
 
 
 def _key(template: str, run_id: str) -> str:
@@ -189,35 +189,53 @@ class ArqRunManager(RunManagerBase):
 
     # ---- Join stream (Redis pub/sub) ----
 
+    @staticmethod
+    def _parse_event_seq(event_id: str | None) -> int:
+        """Extract sequence number from event ID like '{run_id}_evt_{seq}'."""
+        if not event_id:
+            return 0
+        try:
+            return int(event_id.rsplit("_evt_", 1)[-1])
+        except (ValueError, IndexError):
+            return 0
+
     async def join_stream(
-        self, thread_id: str, run_id: str
+        self, thread_id: str, run_id: str, *, last_event_id: str | None = None
     ) -> AsyncIterator[dict[str, Any]]:
-        yield {
-            "event": "metadata",
-            "data": json.dumps({"run_id": run_id, "attempt": 1}),
-        }
+        last_seq = self._parse_event_seq(last_event_id)
 
         pubsub = self.redis.pubsub()
         channel = _key(_EVT_CHANNEL, run_id)
         buf_key = _key(_EVT_BUFFER, run_id)
 
+        # Subscribe BEFORE reading buffer to avoid race condition
         await pubsub.subscribe(channel)
         try:
-            # Replay buffered events
+            # Replay buffered events, skipping already-seen ones
             buffered = await self.redis.lrange(buf_key, 0, -1)
+            max_replayed_seq = last_seq
             for raw in buffered:
                 event = json.loads(raw)
                 if event is None:
                     return
+                event_seq = self._parse_event_seq(event.get("id"))
+                if event_seq <= last_seq:
+                    continue
+                if event_seq > max_replayed_seq:
+                    max_replayed_seq = event_seq
                 yield event
 
-            # Live events from pub/sub
+            # Live events from pub/sub, deduplicating against replayed events
             async for msg in pubsub.listen():
                 if msg["type"] != "message":
                     continue
                 event = json.loads(msg["data"])
                 if event is None:
                     break
+                event_seq = self._parse_event_seq(event.get("id"))
+                if event_seq <= max_replayed_seq:
+                    continue
+                max_replayed_seq = event_seq
                 yield event
         finally:
             await pubsub.unsubscribe(channel)

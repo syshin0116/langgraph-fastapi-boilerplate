@@ -255,6 +255,8 @@ class RunManager(RunManagerBase):
         self,
         thread_id: str,
         run_id: str,
+        *,
+        last_event_id: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Subscribe to events from an existing run (for SSE rejoin after disconnect).
 

@@ -83,6 +83,11 @@ _SETUP_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_store_namespace ON store_items(namespace)",
     "CREATE INDEX IF NOT EXISTS idx_models_provider ON models(provider)",
     "CREATE INDEX IF NOT EXISTS idx_models_enabled ON models(enabled)",
+    # Lease-based crash recovery columns (Phase 2)
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS claimed_by TEXT",
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ",
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS execution_params JSONB NOT NULL DEFAULT '{}'",
+    "CREATE INDEX IF NOT EXISTS idx_runs_lease ON runs(status, lease_expires_at) WHERE status = 'running'",
 ]
 
 _SEED_MODELS = [
@@ -493,6 +498,100 @@ class DB:
                 )
             ).fetchone()
             return dict(row) if row else None
+
+    # ---- Lease management ----
+
+    async def claim_run(
+        self, run_id: str, worker_id: str, lease_duration_s: int = 30
+    ) -> dict[str, Any] | None:
+        """Atomically claim a pending run. Returns the row or None if not claimable."""
+        async with self._conn() as conn:
+            row = await (
+                await conn.execute(
+                    """UPDATE runs
+                    SET status = 'running',
+                        claimed_by = %s,
+                        lease_expires_at = NOW() + make_interval(secs => %s),
+                        updated_at = NOW()
+                    WHERE run_id = %s AND status = 'pending'
+                      AND (claimed_by IS NULL OR claimed_by = %s)
+                    RETURNING *""",
+                    (worker_id, lease_duration_s, run_id, worker_id),
+                )
+            ).fetchone()
+            return dict(row) if row else None
+
+    async def extend_lease(
+        self, run_id: str, worker_id: str, lease_duration_s: int = 30
+    ) -> int:
+        """Extend lease (heartbeat). Returns rowcount; 0 means lease was revoked."""
+        async with self._conn() as conn:
+            result = await conn.execute(
+                """UPDATE runs
+                SET lease_expires_at = NOW() + make_interval(secs => %s),
+                    updated_at = NOW()
+                WHERE run_id = %s AND claimed_by = %s AND status = 'running'""",
+                (lease_duration_s, run_id, worker_id),
+            )
+            return result.rowcount
+
+    async def find_expired_leases(self) -> list[dict[str, Any]]:
+        """Find runs with expired leases (for the reaper)."""
+        async with self._conn() as conn:
+            rows = await (
+                await conn.execute(
+                    """SELECT * FROM runs
+                    WHERE status = 'running'
+                      AND lease_expires_at IS NOT NULL
+                      AND lease_expires_at < NOW()""",
+                )
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    async def reset_run_for_retry(
+        self, run_id: str, max_retries: int = 3
+    ) -> str:
+        """Reset a crashed run for retry. Returns new status ('pending' or 'error')."""
+        async with self._conn() as conn:
+            row = await (
+                await conn.execute(
+                    "SELECT execution_params FROM runs WHERE run_id = %s AND status = 'running' AND lease_expires_at < NOW()",
+                    (run_id,),
+                )
+            ).fetchone()
+            if not row:
+                return "error"
+
+            params = row["execution_params"] or {}
+            retry_count = params.get("retry_count", 0) + 1
+
+            if retry_count > max_retries:
+                await conn.execute(
+                    "UPDATE runs SET status = 'error', claimed_by = NULL, lease_expires_at = NULL, updated_at = NOW() WHERE run_id = %s",
+                    (run_id,),
+                )
+                return "error"
+
+            params["retry_count"] = retry_count
+            await conn.execute(
+                """UPDATE runs
+                SET status = 'pending',
+                    claimed_by = NULL,
+                    lease_expires_at = NULL,
+                    execution_params = %s,
+                    updated_at = NOW()
+                WHERE run_id = %s AND status = 'running'""",
+                (json.dumps(params), run_id),
+            )
+            return "pending"
+
+    async def clear_lease(self, run_id: str) -> None:
+        """Clear lease after successful completion."""
+        async with self._conn() as conn:
+            await conn.execute(
+                "UPDATE runs SET claimed_by = NULL, lease_expires_at = NULL, updated_at = NOW() WHERE run_id = %s",
+                (run_id,),
+            )
 
     # ---- Store ----
 

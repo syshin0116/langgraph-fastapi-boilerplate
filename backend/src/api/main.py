@@ -53,12 +53,18 @@ async def lifespan(app: FastAPI):
 
         redis_url = os.environ.get("REDIS_URL")
         run_manager: RunManagerBase
+        reaper = None
         if redis_url:
             from api.arq_run_manager import ArqRunManager
+            from api.lease_reaper import LeaseReaper
 
             arq_manager = ArqRunManager(db, checkpointer, compiled_graphs, redis_url)
             await arq_manager.setup()
             run_manager = arq_manager
+
+            reaper = LeaseReaper(db, arq_manager.arq_pool)
+            await reaper.start()
+
             logger.info("Using ArqRunManager (Redis: %s)", redis_url)
         else:
             run_manager = RunManager(db, checkpointer, compiled_graphs)
@@ -72,6 +78,8 @@ async def lifespan(app: FastAPI):
         logger.info("Application started — graphs: %s", list(compiled_graphs))
         yield
 
+        if reaper:
+            await reaper.stop()
         if redis_url and hasattr(run_manager, "close"):
             await run_manager.close()
         logger.info("Application shutting down")

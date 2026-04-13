@@ -3,7 +3,7 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sse_starlette.sse import EventSourceResponse
 
 from api.deps import get_db, get_run_manager
@@ -197,10 +197,12 @@ async def get_run(
 async def stream_existing_run(
     thread_id: str,
     run_id: str,
+    request: Request,
     run_manager: Annotated[RunManagerBase, Depends(get_run_manager)],
 ):
     """Rejoin an existing run's SSE stream (reconnection after disconnect)."""
-    event_gen = run_manager.join_stream(thread_id, run_id)
+    last_event_id = request.headers.get("last-event-id")
+    event_gen = run_manager.join_stream(thread_id, run_id, last_event_id=last_event_id)
     response = EventSourceResponse(event_gen)
     response.headers["X-Accel-Buffering"] = "no"
     return response
